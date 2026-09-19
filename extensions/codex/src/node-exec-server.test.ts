@@ -698,11 +698,11 @@ process.stdout.write(JSON.stringify({home: process.env.HOME, codexHome: process.
           await readNodeResponse(frames, 9);
           const notifications = await readNodeProcessNotifications(frames, "node-proof", 3);
           // Codex drains output independently of exit; only closed is terminal in seq order.
-          expect(notifications.map((message) => message.method).toSorted()).toEqual([
-            "process/closed",
-            "process/exited",
-            "process/output",
-          ]);
+          expect(
+            notifications
+              .map((message) => message.method)
+              .toSorted((left, right) => String(left).localeCompare(String(right))),
+          ).toEqual(["process/closed", "process/exited", "process/output"]);
           expect(
             notifications.find((message) => message.method === "process/exited"),
           ).toMatchObject({
