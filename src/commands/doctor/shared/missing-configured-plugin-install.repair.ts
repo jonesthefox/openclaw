@@ -397,7 +397,7 @@ async function repairMissingPluginInstallsWithLease(
         pluginIds: missingRecordedPluginIds,
         timeoutMs: params.timeoutMs,
         workTimeoutMs: params.workTimeoutMs,
-        specOverrides: Object.fromEntries(
+        npmInstallSpecOverrides: Object.fromEntries(
           Object.entries(cohortSpecs).filter(([pluginId]) => driftedPluginIds.has(pluginId)),
         ),
         retainOnUnavailable: true,

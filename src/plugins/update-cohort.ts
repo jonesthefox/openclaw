@@ -127,7 +127,7 @@ async function convergePluginReleaseCohortWithLease(
   });
   params.beforePersistentEffect?.();
   let config = sync.config;
-  const specOverrides = params.coreVersion
+  const npmInstallSpecOverrides = params.coreVersion
     ? resolveOfficialPluginCohortNpmSpecs({
         gatewayVersion: params.coreVersion,
         installRecords: config.plugins?.installs ?? {},
@@ -186,7 +186,7 @@ async function convergePluginReleaseCohortWithLease(
   if (repairedMissingPayloadIds.size > 0) {
     const repair = await updateNpmInstalledPlugins({
       config,
-      specOverrides,
+      npmInstallSpecOverrides,
       pluginIds: [...repairedMissingPayloadIds],
       timeoutMs: params.timeoutMs,
       workTimeoutMs: params.workTimeoutMs,
@@ -211,7 +211,7 @@ async function convergePluginReleaseCohortWithLease(
 
   const update = await updateNpmInstalledPlugins({
     config,
-    specOverrides,
+    npmInstallSpecOverrides,
     timeoutMs: params.timeoutMs,
     workTimeoutMs: params.workTimeoutMs,
     updateChannel: params.channel,

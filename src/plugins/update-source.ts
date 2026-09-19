@@ -120,6 +120,8 @@ export type UpdateInstalledPluginsParams = {
   versionBoundPluginIds?: ReadonlySet<string>;
   onInstallPolicyWarning?: InstallSafetyOverrides["onInstallPolicyWarning"];
   specOverrides?: Record<string, string>;
+  /** Prepared package targets that preserve the recorded update selector. */
+  npmInstallSpecOverrides?: Record<string, string>;
   onIntegrityDrift?: (params: PluginUpdateIntegrityDriftParams) => boolean | Promise<boolean>;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   beforePersistentEffect?: () => void | Promise<void>;
@@ -535,6 +537,7 @@ export function resolveNpmUpdateTarget(params: {
     typeof officialInstallRecords.resolveTrustedSourceLinkedOfficialNpmInstall
   >;
   specOverride?: string;
+  installSpecOverride?: string;
   syncOfficialPluginInstalls?: boolean;
   updateChannel?: UpdateChannel;
   coreVersion?: string;
@@ -559,6 +562,7 @@ export function resolveNpmUpdateTarget(params: {
     target: spec
       ? {
           spec,
+          installSpecOverride: params.specOverride ? undefined : params.installSpecOverride,
           updateChannel: params.updateChannel,
           officialPackageName: resolveNpmSpecPackageName(official?.npmSpec),
           coreVersion: params.coreVersion,

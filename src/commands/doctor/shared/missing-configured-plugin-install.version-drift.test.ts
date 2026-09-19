@@ -8,6 +8,7 @@ import { parseRegistryNpmSpec } from "../../../infra/npm-registry-spec.js";
 import { readPersistedInstalledPluginIndexInstallRecords } from "../../../plugins/installed-plugin-index-records.js";
 import { createPluginMetadataSnapshotFixture } from "../../../plugins/plugin-metadata.test-support.js";
 import { detectPluginVersionDrift } from "../../../plugins/plugin-version-drift.js";
+import { convergePluginReleaseCohort } from "../../../plugins/update-cohort.js";
 import { repairMissingConfiguredPluginInstalls } from "./missing-configured-plugin-install.js";
 import {
   setupPluginInstallTestState,
@@ -32,10 +33,6 @@ vi.mock("../../../plugins/manifest-contract-eligibility.js", async (importOrigin
   ...(await importOriginal<typeof import("../../../plugins/manifest-contract-eligibility.js")>()),
   loadManifestMetadataSnapshot: mocks.loadManifestMetadataSnapshot,
 }));
-vi.mock("../../../plugins/manifest-registry.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../plugins/manifest-registry.js")>()),
-  loadPluginManifestRegistryCore: () => ({ plugins: [], diagnostics: [] }),
-}));
 vi.mock("../../../plugins/bundled-sources.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../plugins/bundled-sources.js")>()),
   resolveBundledPluginSources: () => new Map(),
@@ -54,12 +51,13 @@ const coreVersion = "2026.9.5";
 
 function createDriftedInstalls({
   hostVersion = coreVersion,
+  installedVersion = oldVersion,
   packages = [
     ["discord", "@openclaw/discord"],
     ["exa", "@openclaw/exa-plugin"],
     ["community", "@example/community"],
   ],
-}: { hostVersion?: string; packages?: [string, string][] } = {}) {
+}: { hostVersion?: string; installedVersion?: string; packages?: [string, string][] } = {}) {
   const stateDir = tempDirs.make("openclaw-doctor-plugin-version-drift-");
   const env = {
     ...testEnv,
@@ -74,18 +72,22 @@ function createDriftedInstalls({
       path.join(installPath, "package.json"),
       JSON.stringify({
         name: packageName,
-        version: oldVersion,
+        version: installedVersion,
         openclaw: { extensions: ["./index.js"] },
       }),
     );
     fs.writeFileSync(path.join(installPath, "index.js"), "export default function register() {}\n");
+    fs.writeFileSync(
+      path.join(installPath, "openclaw.plugin.json"),
+      JSON.stringify({ id: pluginId, configSchema: { type: "object" } }),
+    );
     records[pluginId] = {
       source: "npm",
-      spec: `${packageName}@${oldVersion}`,
+      spec: `${packageName}@${installedVersion}`,
       resolvedName: packageName,
-      resolvedSpec: `${packageName}@${oldVersion}`,
-      version: oldVersion,
-      resolvedVersion: oldVersion,
+      resolvedSpec: `${packageName}@${installedVersion}`,
+      version: installedVersion,
+      resolvedVersion: installedVersion,
       installPath,
     };
   }
@@ -103,7 +105,7 @@ function createDriftedInstalls({
         origin: "global",
         rootDir: record.installPath,
         packageName: record.resolvedName,
-        packageVersion: oldVersion,
+        packageVersion: installedVersion,
       })),
     }),
   );
@@ -151,6 +153,44 @@ describe("Doctor official plugin version repair", () => {
       };
     });
   });
+
+  it.each([coreVersion, "2026.9.5-beta.2"])(
+    "keeps aligned floating official installs unchanged at core %s when the registry is ahead",
+    async (hostVersion) => {
+      const { cfg, env, records } = createDriftedInstalls({
+        hostVersion,
+        installedVersion: hostVersion,
+        packages: [
+          ["discord", "@openclaw/discord"],
+          ["exa", "@openclaw/exa-plugin"],
+        ],
+      });
+      expectDefined(records.discord, "discord install").spec = "@openclaw/discord";
+      expectDefined(records.exa, "exa install").spec = "@openclaw/exa-plugin@latest";
+      const config = { ...cfg, plugins: { ...cfg.plugins, installs: records } };
+
+      const result = await convergePluginReleaseCohort({
+        config,
+        env,
+        channel: hostVersion.includes("-beta.") ? "beta" : "stable",
+        coreVersion: hostVersion,
+        timeoutMs: 60_000,
+      });
+
+      expect(mocks.resolveNpmSpecMetadata.mock.calls.map(([request]) => request.spec)).toEqual([
+        `@openclaw/discord@${hostVersion}`,
+        `@openclaw/exa-plugin@${hostVersion}`,
+      ]);
+      expect(mocks.installPluginFromNpmSpec).not.toHaveBeenCalled();
+      expect(result.changed).toBe(false);
+      expect(result.npmChanged).toBe(false);
+      expect(result.config).toEqual(config);
+      expect(result.updateOutcomes).toMatchObject([
+        { pluginId: "discord", status: "unchanged", currentVersion: hostVersion },
+        { pluginId: "exa", status: "unchanged", currentVersion: hostVersion },
+      ]);
+    },
+  );
 
   it.each([coreVersion, "2026.9.5-beta.2"])(
     "converges official installs to core %s and leaves third-party installs untouched",
