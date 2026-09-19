@@ -31,73 +31,79 @@ type CurrentAdmissionFixture = {
 };
 
 export function registerAlreadyCurrentAdmissionTests(f: CurrentAdmissionFixture) {
-  it("refuses pending service recovery acquired before already-current activation", async () => {
-    const updateExecutor = await import("./update-command-executor.js");
-    const { resolvePackageActivationAnchor } =
-      await import("../../infra/package-update-activation-journal.js");
-    const root = await f.prepareCurrentPackage("current-core-recovery");
-    const serviceRoot = f.createCaseDir("retained-service-install");
-    const serviceEntry = await f.writeServicePackage(serviceRoot);
-    f.mockFileBackedPathExists();
-    f.mockRunningManagedGateway([process.execPath, serviceEntry, "gateway", "run"]);
-    await f.useFileBackedConfig();
+  it.each([undefined, "30"])(
+    "refuses pending service recovery acquired before already-current activation (timeout=%s)",
+    async (timeout) => {
+      const updateExecutor = await import("./update-command-executor.js");
+      const { resolvePackageActivationAnchor } =
+        await import("../../infra/package-update-activation-journal.js");
+      const root = await f.prepareCurrentPackage("current-core-recovery");
+      const serviceRoot = f.createCaseDir("retained-service-install");
+      const serviceEntry = await f.writeServicePackage(serviceRoot);
+      f.mockFileBackedPathExists();
+      f.mockRunningManagedGateway([process.execPath, serviceEntry, "gateway", "run"]);
+      await f.useFileBackedConfig();
 
-    const anchor = resolvePackageActivationAnchor(serviceRoot);
-    const evidence = path.join(anchor, "candidate-evidence");
-    const retainedFiles = [
-      path.join(serviceRoot, "package.json"),
-      serviceEntry,
-      evidence,
-      f.resolveConfigPath(),
-    ];
-    const snapshot = () => retainedFiles.map((file) => fsSync.readFileSync(file));
-    let retainedBefore: Buffer[] | undefined;
-    const withExecutor = updateExecutor.withUpdateCommandExecutor;
-    vi.spyOn(updateExecutor, "withUpdateCommandExecutor").mockImplementation(
-      (runId, operation, options) =>
-        withExecutor(
-          runId,
-          (executor) =>
-            operation({
-              async enter(installRoot, enterOptions) {
-                const fence = await executor.enter(installRoot, enterOptions);
-                if (enterOptions?.activationTimeoutMs !== undefined && !retainedBefore) {
-                  expect(installRoot).toBe(root);
-                  fsSync.mkdirSync(anchor, { mode: 0o700 });
-                  fsSync.writeFileSync(evidence, "retained publication evidence\n", {
-                    mode: 0o600,
-                  });
-                  retainedBefore = snapshot();
-                }
-                return fence;
-              },
-            }),
-          options,
-        ),
-    );
+      const anchor = resolvePackageActivationAnchor(serviceRoot);
+      const evidence = path.join(anchor, "candidate-evidence");
+      const retainedFiles = [
+        path.join(serviceRoot, "package.json"),
+        serviceEntry,
+        evidence,
+        f.resolveConfigPath(),
+      ];
+      const snapshot = () => retainedFiles.map((file) => fsSync.readFileSync(file));
+      let retainedBefore: Buffer[] | undefined;
+      const withExecutor = updateExecutor.withUpdateCommandExecutor;
+      vi.spyOn(updateExecutor, "withUpdateCommandExecutor").mockImplementation(
+        (runId, operation, options) =>
+          withExecutor(
+            runId,
+            (executor) =>
+              operation({
+                async enter(installRoot, enterOptions) {
+                  const fence = await executor.enter(installRoot, enterOptions);
+                  // Activation carries this optional field even when no deadline was requested.
+                  if (enterOptions && "activationTimeoutMs" in enterOptions && !retainedBefore) {
+                    expect(installRoot).toBe(root);
+                    fsSync.mkdirSync(anchor, { mode: 0o700 });
+                    fsSync.writeFileSync(evidence, "retained publication evidence\n", {
+                      mode: 0o600,
+                    });
+                    retainedBefore = snapshot();
+                  }
+                  return fence;
+                },
+              }),
+            options,
+          ),
+      );
 
-    await expect(f.updateCommand({ yes: true, json: true })).rejects.toEqual(new f.ExitError(1));
+      await expect(f.updateCommand({ yes: true, json: true, timeout })).rejects.toEqual(
+        new f.ExitError(1),
+      );
 
-    expect(retainedBefore).toBeDefined();
-    expect(f.lastWriteJsonCall()).toMatchObject({
-      status: "error",
-      root: serviceRoot,
-      reason: "update-recovery-pending",
-      recovery: { serviceRestartSafe: false },
-    });
-    expect(snapshot()).toEqual(retainedBefore);
-    f.expectNoSideEffects(
-      f.mocks.syncPluginsForUpdateChannel,
-      f.mocks.updateNpmInstalledPlugins,
-      f.mocks.replaceConfigFile,
-      f.mocks.serviceStop,
-      f.mocks.serviceStart,
-      f.mocks.serviceRestart,
-      f.mocks.prepareRestartScript,
-    );
-    expect(f.packageInstallCommandCall()).toBeUndefined();
-    expect(f.freshRestartCalls()).toHaveLength(0);
-  });
+      expect(retainedBefore).toBeDefined();
+      expect(f.lastWriteJsonCall()).toMatchObject({
+        status: "error",
+        root: serviceRoot,
+        reason: "update-recovery-pending",
+        recovery: { serviceRestartSafe: false },
+      });
+      expect(snapshot()).toEqual(retainedBefore);
+      f.expectNoSideEffects(
+        f.mocks.syncPluginsForUpdateChannel,
+        f.mocks.updateNpmInstalledPlugins,
+        f.mocks.replaceConfigFile,
+        f.mocks.serviceStop,
+        f.mocks.serviceStart,
+        f.mocks.serviceRestart,
+        f.mocks.prepareRestartScript,
+      );
+      expect(f.packageInstallCommandCall()).toBeUndefined();
+      expect(f.freshRestartCalls()).toHaveLength(0);
+    },
+  );
 
   it.each(["unavailable plugin", "changed service owner"])(
     "handles %s before already-current convergence",
