@@ -59,6 +59,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../state/openclaw-agent-execution.worker",
     distWorkerPath: "state/openclaw-agent-execution.worker.js",
   },
+  heartbeatOutcomeStore: {
+    currentModuleUrl,
+    sourceWorkerName: "heartbeat-outcome-store.worker",
+    distWorkerPath: "infra/heartbeat-outcome-store.worker.js",
+  },
   sqliteStore: {
     currentModuleUrl,
     sourceWorkerName: "sqlite-store.worker",
