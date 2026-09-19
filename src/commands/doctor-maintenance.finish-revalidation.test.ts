@@ -5,7 +5,10 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { waitForGatewayHealthyRestart } from "../cli/daemon-cli/restart-health.js";
-import { ServiceInspectionError } from "../daemon/service-inspection-error.js";
+import {
+  ServiceInspectionError,
+  ServiceOwnershipRefusalError,
+} from "../daemon/service-inspection-error.js";
 import type { SystemdServiceReadBinding } from "../daemon/service-types.js";
 import type { GatewayService } from "../daemon/service.js";
 import { createMockGatewayService, mockSystemAccountHome } from "../daemon/service.test-helpers.js";
@@ -112,6 +115,10 @@ type StoppedUnitState =
   | "slow-loadunit-admission"
   | "inspection-unavailable"
   | "inspection-error"
+  | "ownership-refused"
+  | "ownership-refused-wrapped"
+  | "runtime-ownership-refused"
+  | "launchd-owned"
   | "inspection-timeout"
   | "runtime-timeout"
   | "runtime-timeout-changed-command"
@@ -439,6 +446,15 @@ async function runDoctorFinishForStoppedUnit(
           isLoaded: async () => scenario === "retained" || boundedInspection,
           readCommand: async (env, opts) => {
             await releaseDuringInspection?.();
+            if (stopObserved && scenario.startsWith("ownership-refused")) {
+              const refusal = new ServiceOwnershipRefusalError("systemd-account-refused");
+              throw scenario.endsWith("wrapped")
+                ? new AggregateError([refusal], "Native inspection did not settle successfully")
+                : refusal;
+            }
+            if (stopObserved && scenario === "launchd-owned") {
+              throw new ServiceInspectionError("launchd-system-owned");
+            }
             if (++commandReads === 2) {
               activateCompetingUpdate?.();
               if (continuation === "lost-before-stop" && runId) {
@@ -503,6 +519,9 @@ async function runDoctorFinishForStoppedUnit(
             };
           },
           readRuntime: async (env, opts) => {
+            if (stopObserved && scenario === "runtime-ownership-refused") {
+              throw new ServiceOwnershipRefusalError("systemd-manager-changed");
+            }
             if (running) {
               return {
                 status: "running",
@@ -897,6 +916,31 @@ it("does not treat an inconclusive inspection as admission to a competing update
   });
   expect(result.startCalls).toBe(0);
   expect(result.restartCalls).toBe(0);
+});
+
+it.each([
+  "ownership-refused",
+  "ownership-refused-wrapped",
+  "runtime-ownership-refused",
+  "launchd-owned",
+] as const)("preserves the native ownership refusal without activation: %s", async (scenario) => {
+  const result = await runDoctorFinishForStoppedUnit(scenario);
+  expect(result.startCalls).toBe(0);
+  expect(result.restartCalls).toBe(0);
+  expect(result.finishError).toMatchObject({
+    failureFacts: expect.arrayContaining([
+      expect.objectContaining({
+        code:
+          scenario === "launchd-owned"
+            ? "launchd-system-owned"
+            : scenario === "runtime-ownership-refused"
+              ? "systemd-manager-changed"
+              : "systemd-account-refused",
+      }),
+    ]),
+  });
+  expect(result.logs.join("\n")).not.toContain("restoration inspection was inconclusive");
+  expect(waitForGatewayHealthyRestart).not.toHaveBeenCalled();
 });
 
 it("reports both inspection and start failures without claiming recovery", async () => {

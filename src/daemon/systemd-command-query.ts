@@ -1,6 +1,10 @@
 /** Deadline- and custody-bound effective command queries for the systemd reader. */
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { ServiceInspectionError } from "./service-inspection-error.js";
+import {
+  findServiceOwnershipRefusal,
+  ServiceInspectionError,
+  ServiceOwnershipRefusalError,
+} from "./service-inspection-error.js";
 import type { GatewayServiceEnv, GatewayServiceReadOptions } from "./service-types.js";
 import { assertGatewayServiceUpdateCurrent } from "./service-update-authority.js";
 import { decodeLegacyBusctlOutput } from "./systemd-busctl-legacy.js";
@@ -34,10 +38,10 @@ export async function createSystemdCommandQuery(
       peer.unit !== unitName ||
       (inspection && peer.managerUid !== inspection.managerUid))
   ) {
-    throw unavailable();
+    throw new ServiceOwnershipRefusalError("systemd-manager-changed");
   }
   if (scope === "system" && inspection && inspection.managerUid !== 0) {
-    throw unavailable();
+    throw new ServiceOwnershipRefusalError("systemd-manager-changed");
   }
   const transport =
     peer || scope === "system"
@@ -53,8 +57,12 @@ export async function createSystemdCommandQuery(
   }
   const managerPeer =
     !opts?.requireLoaded && transport?.kind === "private"
-      ? await openSystemdUserManager(transport.address, deadlineAt).catch(() => {
+      ? await openSystemdUserManager(transport.address, deadlineAt).catch((error: unknown) => {
           assertGatewayServiceUpdateCurrent();
+          const refusal = findServiceOwnershipRefusal(error);
+          if (refusal) {
+            throw refusal;
+          }
           throw new ServiceInspectionError("systemd-user-bus-unavailable");
         })
       : undefined;
@@ -68,6 +76,10 @@ export async function createSystemdCommandQuery(
         return await managerPeer.query(args, signatures, deadlineAt);
       } catch (error) {
         assertGatewayServiceUpdateCurrent();
+        const refusal = findServiceOwnershipRefusal(error);
+        if (refusal) {
+          throw refusal;
+        }
         if (error instanceof ServiceInspectionError) {
           throw error;
         }

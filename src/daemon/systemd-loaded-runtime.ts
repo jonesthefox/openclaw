@@ -2,7 +2,10 @@
 // under live custody; neither mode starts a unit or a bus service.
 import { isDeepStrictEqual } from "node:util";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { ServiceInspectionError } from "./service-inspection-error.js";
+import {
+  ServiceInspectionError,
+  ServiceOwnershipRefusalError,
+} from "./service-inspection-error.js";
 import {
   createServiceRuntimeInspectionFailure,
   type GatewayServiceRuntime,
@@ -60,7 +63,7 @@ export async function readLoadedSystemdServiceRuntime(
     }
     if (binding) {
       if (scope === "system" || binding.unit !== unitName) {
-        throw unavailable();
+        throw new ServiceOwnershipRefusalError("systemd-manager-changed");
       }
       remainingQueries--;
       const values = await binding.query(args, signatures, deadline, inspection);
@@ -139,7 +142,7 @@ export async function readLoadedSystemdServiceRuntime(
       (scope === "system" && managerUid !== 0) ||
       (inspection && managerUid !== inspection.managerUid)
     ) {
-      throw unavailable();
+      throw new ServiceOwnershipRefusalError("systemd-manager-changed");
     }
     const [unit] = await query(
       [
@@ -234,6 +237,9 @@ export async function readLoadedSystemdServiceRuntime(
     // Same manager identity alone does not exclude unit restart/state changes.
     // Compare native transition generations as well as state to reject ABA observations.
     const after = await readUnit();
+    if (owner !== (await readOwner())) {
+      throw new ServiceOwnershipRefusalError("systemd-manager-changed");
+    }
     if (
       !isDeepStrictEqual(before, after) ||
       optionalCounter(entered) === undefined ||
@@ -248,8 +254,7 @@ export async function readLoadedSystemdServiceRuntime(
       !isUint32(pid) ||
       !isInt32(exitStatus) ||
       !isInt32(exitCode) ||
-      typeof killMode !== "string" ||
-      owner !== (await readOwner())
+      typeof killMode !== "string"
     ) {
       throw unavailable();
     }

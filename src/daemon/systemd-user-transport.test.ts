@@ -6,6 +6,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 import { execFileUtf8 } from "./exec-file.js";
 import { mergeGatewayServiceEnv } from "./service-env-merge.js";
+import { ServiceOwnershipRefusalError } from "./service-inspection-error.js";
 import { execBusctlUser, execSystemctlUser } from "./systemd-exec.js";
 import { openSystemdUserManager } from "./systemd-peer-native.js";
 import { readSystemdServiceExecStart } from "./systemd-service-files.js";
@@ -247,6 +248,45 @@ it("reports a lost selected private socket without reselecting or blaming the de
   expect(execFileUtf8).toHaveBeenCalledTimes(probes);
   expect(close).toHaveBeenCalledOnce();
 });
+
+it.each(["discovery", "connection", "query"])(
+  "preserves native ownership refusal during private %s without a fallback route",
+  async (phase) => {
+    const home = dirs.make("openclaw-refused-private-");
+    await fs.mkdir(path.join(home, "systemd"));
+    await fs.writeFile(path.join(home, "systemd/private"), "");
+    const env = {
+      HOME: home,
+      XDG_RUNTIME_DIR: home,
+      DBUS_SESSION_BUS_ADDRESS: `unix:path=${home}/missing-bus`,
+    };
+    vi.mocked(execFileUtf8).mockResolvedValue(missing);
+    const refusal = new ServiceOwnershipRefusalError("systemd-manager-changed");
+    const close = vi.fn(async () => {});
+    const connection = { close, verify: () => {}, query: async () => ["252.39"] };
+    vi.mocked(openSystemdUserManager).mockRejectedValue(refusal);
+    if (phase !== "discovery") {
+      vi.mocked(openSystemdUserManager).mockResolvedValueOnce(connection);
+    }
+    if (phase === "query") {
+      vi.mocked(openSystemdUserManager).mockResolvedValue({
+        ...connection,
+        query: async () => {
+          throw refusal;
+        },
+      });
+    }
+    const read =
+      phase === "discovery"
+        ? resolveSystemdUserTransport(env)
+        : readSystemdServiceExecStart(env, { requireEffective: true });
+    await expect(read).rejects.toBe(refusal);
+    expect(vi.mocked(execFileUtf8).mock.calls.some(([, args]) => args.includes("--machine"))).toBe(
+      false,
+    );
+    expect(close).toHaveBeenCalledTimes(phase === "discovery" ? 0 : phase === "connection" ? 1 : 2);
+  },
+);
 
 it("retains direct-root machine routing at the selection owner", async () => {
   const home = dirs.make("openclaw-root-transport-");

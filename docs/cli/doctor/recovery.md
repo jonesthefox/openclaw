@@ -26,7 +26,12 @@ will be installed. Explicit repair maintenance skips this separate cleanup flow.
 If Doctor stopped a managed Gateway for repair, a failed or timed-out restoration
 probe produces a warning and Doctor still attempts to start that service and
 verify readiness. Live maintenance custody and update admission still apply;
-observed changes to the service command or manager require operator review.
+observed changes to the service command, account, or manager require operator review.
+An explicit ownership refusal is reported as a refusal, without attempting to
+start the rejected service. On systemd, Doctor retains the native manager and
+unit identity before stopping the service and revalidates it at activation. If
+that identity cannot be captured, Doctor leaves the service running and reports
+the inspection warning; live state writers still prevent unsafe offline repair.
 
 When service inspection blocks repair, Doctor and `gateway status --deep` name
 the failed native probe:

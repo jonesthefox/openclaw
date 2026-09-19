@@ -1,5 +1,6 @@
 import type { ServiceInspectionReason } from "../../daemon/service-inspection-error.js";
 import type { GatewayServiceDefinitionBackupReceipt } from "../../daemon/service-stage.js";
+import type { SystemdServiceIdentity } from "../../daemon/service-types.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import type { WindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
 
@@ -40,6 +41,7 @@ export type PreManagedServiceStop = {
   serviceNodeRunner?: string;
   /** Original account observed from the pinned native user-manager connection. */
   serviceManagerUid?: number;
+  serviceSystemdIdentity?: SystemdServiceIdentity;
   windowsTaskAutoStartRecovery?: WindowsTaskAutoStartRecovery;
 };
 

@@ -38,7 +38,11 @@ import {
   uninstallScheduledTask,
 } from "./schtasks.js";
 import { mergeGatewayServiceEnv } from "./service-env-merge.js";
-import { ServiceInspectionError } from "./service-inspection-error.js";
+import {
+  ServiceInspectionError,
+  ServiceOwnershipRefusalError,
+  findServiceOwnershipRefusal,
+} from "./service-inspection-error.js";
 import { resolveServiceEntrypoint } from "./service-layout.js";
 import {
   withGatewayServiceOperationLock,
@@ -221,6 +225,10 @@ export async function readGatewayServiceLoadState(
   try {
     return { status: (await service.isLoaded(args)) ? "loaded" : "not-loaded" };
   } catch (error) {
+    const refusal = findServiceOwnershipRefusal(error);
+    if (refusal) {
+      throw refusal;
+    }
     return {
       status: "unknown",
       detail: String(error),
@@ -238,9 +246,7 @@ export async function readGatewayServiceState(
   if (service.readCommand === readSystemdServiceExecStart && !args.systemdReadTarget) {
     const installation = await findSystemdGatewayInstallation(baseEnv);
     if (installation.kind === "dueling" && args.requireEffective && args.requireLoadedCommand) {
-      throw new Error(
-        "Both user and system systemd units own this Gateway name. Run openclaw doctor interactively to inspect the competing supervisors before maintenance.",
-      );
+      throw new ServiceOwnershipRefusalError("systemd-competing-managers");
     }
     const target =
       installation.kind === "system"
@@ -318,7 +324,13 @@ async function readGatewayServiceStateWithBinding(
               commandInspection = inspection;
             },
           })
-          .catch(() => null);
+          .catch((error: unknown) => {
+            const refusal = findServiceOwnershipRefusal(error);
+            if (refusal) {
+              throw refusal;
+            }
+            return null;
+          });
   const env = mergeGatewayServiceEnv(baseEnv, command);
   // Reject persisted selector drift before invoking the native service manager.
   args.validateEnvBeforeStatusRead?.(env);

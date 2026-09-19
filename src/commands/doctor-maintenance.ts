@@ -4,7 +4,10 @@ import { formatCliCommand } from "../cli/command-format.js";
 import type { PreManagedServiceStop } from "../cli/update-cli/update-command-service-maintenance.js";
 import { isDefaultInstallIdentity, resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { ServiceInspectionError } from "../daemon/service-inspection-error.js";
+import {
+  ServiceInspectionError,
+  findServiceOwnershipRefusal,
+} from "../daemon/service-inspection-error.js";
 import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { assertLegacyGatewayStoppedForMaintenance } from "../infra/gateway-lock-legacy.js";
@@ -231,6 +234,10 @@ export async function beginDoctorMaintenance(params: {
           );
           if (current.inspectionReason) {
             inspectionFailure = new ServiceInspectionError(current.inspectionReason);
+            const refusal = findServiceOwnershipRefusal(inspectionFailure);
+            if (refusal) {
+              throw refusal;
+            }
           } else if (
             current.loadState.status === "unknown" ||
             (current.runtime?.status !== "running" && current.runtime?.status !== "stopped")
@@ -245,6 +252,10 @@ export async function beginDoctorMaintenance(params: {
         } catch (error) {
           if (hasCommandProcessCleanupError(error)) {
             throw error;
+          }
+          const refusal = findServiceOwnershipRefusal(error);
+          if (refusal) {
+            throw refusal;
           }
           inspectionFailure = error;
         }
@@ -277,6 +288,9 @@ export async function beginDoctorMaintenance(params: {
             stdout: params.options.json ? process.stderr : process.stdout,
             preserveDefinition: true,
             assertCurrent: assertMaintenanceCurrent,
+            ...(before.serviceSystemdIdentity
+              ? { systemdIdentity: before.serviceSystemdIdentity }
+              : {}),
           });
         });
         assertMaintenanceCurrent();
@@ -327,7 +341,7 @@ export async function beginDoctorMaintenance(params: {
       throw doctorGatewayMaintenanceError({
         env,
         phase: "gateway-restoration",
-        code: "doctor-gateway-restoration-failed",
+        code: findServiceOwnershipRefusal(error)?.reason ?? "doctor-gateway-restoration-failed",
         detail: `The managed Gateway could not be restored after Doctor maintenance: ${String(error)}`,
         cause: error,
       });
@@ -450,12 +464,17 @@ export async function beginDoctorMaintenance(params: {
                 shouldRestart: true,
                 jsonMode: true,
                 expectedService: inspection,
+                retainNativeIdentity: true,
                 assertCurrent: assertUpdateAdmissionCurrent,
                 onStopped: (before) => {
                   stopped = before;
                 },
               });
               assertDoctorMaintenanceInspection(stopped, env);
+              if (stopped.serviceUpdateVerdict?.kind === "unavailable") {
+                warnings.push(stopped.serviceUpdateVerdict.message);
+                params.runtime.log(stopped.serviceUpdateVerdict.message);
+              }
               if (staleReplacement && stopped.serviceEnv) {
                 await assertStaleDoctorGatewayStopped({
                   stale: staleReplacement,
