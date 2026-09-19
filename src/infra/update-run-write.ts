@@ -120,7 +120,7 @@ function applyUpdateRunDiagnostics(
     verification,
     steps,
     recovery: observedRecovery,
-    rollbackOutcome,
+    rollbackOutcome: observedRollback,
   } = typeof diagnostics === "function" ? diagnostics(record.verification) : diagnostics;
   if (failure && record.status === "running") {
     upsertStep(record, { ...failure, status: "failed" });
@@ -145,12 +145,12 @@ function applyUpdateRunDiagnostics(
     constraint.reason !== "runtime-verification-failed"
       ? constraint
       : observedRecovery;
-  if (recovery || rollbackOutcome || verification) {
+  if (recovery || observedRollback || verification) {
     recordUpdateRunVerificationRecord(record, {
       ...verification,
       ...(verification ? record.verification : {}),
       ...(recovery ? { recovery } : {}),
-      ...(rollbackOutcome ? { rollbackOutcome } : {}),
+      ...(observedRollback ? { rollbackOutcome: observedRollback } : {}),
     });
   }
 }
@@ -172,7 +172,7 @@ export function recordUpdateRunDiagnostics(
         diagnostics.verification
       )
     ) {
-      return;
+      return undefined;
     }
     return mutateRun(
       runId,
@@ -189,6 +189,7 @@ export function recordUpdateRunDiagnostics(
     warn(
       `Update diagnostics could not be recorded (${fact.code}): ${fact.message ?? "no error message"}`,
     );
+    return undefined;
   }
 }
 
@@ -203,16 +204,16 @@ export function finishUpdateRun(
   return mutateRun(
     runId,
     (record) => {
-      const diagnostics = result.diagnostics;
-      if (diagnostics) {
-        applyUpdateRunDiagnostics(record, diagnostics);
-        if (!diagnostics.verification) {
-          for (const step of (diagnostics.steps ?? []).flatMap(updateRunStepsFromResultStep)) {
-            upsertStep(record, step);
+      if (record.status === "running") {
+        const diagnostics = result.diagnostics;
+        if (diagnostics) {
+          applyUpdateRunDiagnostics(record, diagnostics);
+          if (!diagnostics.verification) {
+            for (const step of (diagnostics.steps ?? []).flatMap(updateRunStepsFromResultStep)) {
+              upsertStep(record, step);
+            }
           }
         }
-      }
-      if (record.status === "running") {
         record.before = { ...record.before, ...result.before };
       }
       finishUpdateRunRecord(record, result);
