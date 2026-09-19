@@ -5,6 +5,7 @@ import { t } from "../i18n/index.ts";
 import { fileKindForPath, shortestFileLabels } from "./file-kind.ts";
 import {
   decodeGitHubPathSegment,
+  isGitHubHost,
   parseGitHubItemPath,
   parseGitHubLinkTarget,
 } from "./github-link-target.ts";
@@ -48,11 +49,6 @@ const BARE_URL_CLASS = "markdown-bare-url";
 // generated label exactly like linkify output.
 const CODE_SPAN_LINK_MARKUP = "code-span-url";
 const CODE_SPAN_URL_BREAK_RE = /[\s\p{Cc}]/u;
-
-function isGitHubHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  return host === "github.com" || host === "www.github.com";
-}
 
 // Inline-code file links are rendered by the code_inline rule, which runs after
 // every core rule. The core rule therefore parks the resolved target here so the
