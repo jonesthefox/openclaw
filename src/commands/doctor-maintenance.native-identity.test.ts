@@ -116,17 +116,27 @@ async function repair(scenario: Scenario) {
   const reply = (args: string[]): Array<{ type: string; data: unknown }> => {
     const method = args[4];
     if (args[0] === "call") {
-      if (!method) throw new Error("Missing native method in fixture query");
-      if (method === "GetId") return [{ type: "s", data: [busId] }];
-      if (method === "GetNameOwner") return [{ type: "s", data: [managerOwner] }];
-      if (method === "GetConnectionUnixUser") return [{ type: "u", data: [0] }];
+      if (!method) {
+        throw new Error("Missing native method in fixture query");
+      }
+      if (method === "GetId") {
+        return [{ type: "s", data: [busId] }];
+      }
+      if (method === "GetNameOwner") {
+        return [{ type: "s", data: [managerOwner] }];
+      }
+      if (method === "GetConnectionUnixUser") {
+        return [{ type: "u", data: [0] }];
+      }
       if (method === "GetUnit" || method === "LoadUnit") {
         return [{ type: "o", data: [unitObject] }];
       }
       if (["ResetFailedUnit", "StartUnit", "RestartUnit"].includes(method)) {
         expect(args[1]).toBe(":1.42");
         effects.push(method);
-        if (method === "ResetFailedUnit") return [];
+        if (method === "ResetFailedUnit") {
+          return [];
+        }
         running = true;
         return [{ type: "o", data: ["/org/freedesktop/systemd1/job/7"] }];
       }
@@ -170,7 +180,9 @@ async function repair(scenario: Scenario) {
       };
       return args.slice(4).map((name) => {
         const property = properties[name];
-        if (!property) throw new Error(`Unexpected native property: ${name}`);
+        if (!property) {
+          throw new Error(`Unexpected native property: ${name}`);
+        }
         return property;
       });
     }
@@ -193,7 +205,9 @@ async function repair(scenario: Scenario) {
   });
   native.systemctl.mockImplementation(async (args) => {
     const action = args[0];
-    if (!action) throw new Error("Missing systemctl action in fixture query");
+    if (!action) {
+      throw new Error("Missing systemctl action in fixture query");
+    }
     if (action === "stop") {
       effects.push("stop");
       stopped = true;
@@ -209,7 +223,9 @@ async function repair(scenario: Scenario) {
     if (scenario === "capture-unavailable") {
       throw new Error("native identity probe unavailable");
     }
-    if (stopped && scenario === "account-reassigned-at-activation") serviceUser = "other-account";
+    if (stopped && scenario === "account-reassigned-at-activation") {
+      serviceUser = "other-account";
+    }
     return {
       verify() {},
       close: async () => {},
@@ -246,9 +262,15 @@ async function repair(scenario: Scenario) {
         runtime: { log: (...args) => logs.push(args.join(" ")), error() {}, exit() {} },
       });
       expect(effects).toEqual(scenario === "capture-unavailable" ? [] : ["stop"]);
-      if (scenario === "account-refused") serviceUser = "other-account";
-      if (scenario === "manager-replaced") managerOwner = ":1.99";
-      if (scenario === "broker-replaced") busId = "abcdef0123456789abcdef0123456789";
+      if (scenario === "account-refused") {
+        serviceUser = "other-account";
+      }
+      if (scenario === "manager-replaced") {
+        managerOwner = ":1.99";
+      }
+      if (scenario === "broker-replaced") {
+        busId = "abcdef0123456789abcdef0123456789";
+      }
       diagnosticFailure = scenario === "inspection-failed";
       let error: unknown;
       try {

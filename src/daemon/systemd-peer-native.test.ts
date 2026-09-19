@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { mockNodeBuiltinModule } from "../plugin-sdk/test-helpers/node-builtin-mocks.js";
 import { ServiceOwnershipRefusalError } from "./service-inspection-error.js";
 import { withGatewayServiceUpdateAuthority } from "./service-update-authority.js";
 import {
@@ -29,14 +30,13 @@ vi.mock("../shared/pid-alive.js", () => ({
 }));
 vi.mock("node:module", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:module")>();
-  return {
-    ...original,
+  return mockNodeBuiltinModule(() => Promise.resolve(original), {
     createRequire: (filename: string | URL) => {
       const require = original.createRequire(filename);
       return Object.assign(
-        (name: string) =>
-          name !== "koffi"
-            ? require(name)
+        (specifier: string) =>
+          specifier !== "koffi"
+            ? require(specifier)
             : {
                 sizeof: () => 24,
                 struct: () => ({}),
@@ -77,7 +77,7 @@ vi.mock("node:module", async (importOriginal) => {
         require,
       );
     },
-  };
+  });
 });
 
 beforeEach(() => {
