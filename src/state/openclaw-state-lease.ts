@@ -4,7 +4,11 @@ import type { DatabaseSync } from "node:sqlite";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { computeBackoff, sleepWithAbort } from "../infra/backoff.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
-import { isSqliteLockError, sqliteExtendedResultCode } from "../infra/sqlite-error-diagnostics.js";
+import {
+  isSqliteLockError,
+  isSqliteNativeOpenFailure,
+  sqliteExtendedResultCode,
+} from "../infra/sqlite-error-diagnostics.js";
 import { isSqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import { StateDatabaseCoordinatorContentionError } from "../infra/state-database-coordinator.js";
 import { loggingState } from "../logging/state.js";
@@ -336,6 +340,7 @@ export async function withOpenClawStateLease<T>(
             error.code === "OPENCLAW_STATE_LEASE_STORAGE_FAILED"
           ) &&
           !isLeaseWriteContention(error) &&
+          !isSqliteNativeOpenFailure(error) &&
           sqliteExtendedResultCode(error) === undefined &&
           !isSqliteWorkerError(error, "unavailable") &&
           !isSqliteWorkerError(error, "overloaded") &&

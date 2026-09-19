@@ -2724,6 +2724,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "src/agents/embedded-agent-runner/run/model-setup.ownership.test.ts",
         "src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts",
         "src/agents/embedded-agent-runner/run/runtime-preparation.thinking.test.ts",
+        "src/agents/embedded-agent-runner/run/run-attempt-dispatch.owner.test.ts",
       ],
     },
     {
@@ -2787,6 +2788,7 @@ describe("scripts/test-projects changed-target routing", () => {
           "src/agents/embedded-agent-runner/run/model-setup.ownership.test.ts",
           "src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts",
           "src/agents/embedded-agent-runner/run/runtime-preparation.thinking.test.ts",
+          "src/agents/embedded-agent-runner/run/run-attempt-dispatch.owner.test.ts",
         ],
         watchMode: false,
       },

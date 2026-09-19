@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import * as backoff from "../infra/backoff.js";
+import * as nodeSqlite from "../infra/node-sqlite.js";
 import { readSqliteBusyTimeout } from "../infra/sqlite-busy-timeout.js";
 import { tryAcquireExclusiveSqliteCoordinator } from "../infra/sqlite-coordinator.js";
 import {
@@ -10,7 +11,10 @@ import {
 } from "../infra/state-database-coordinator.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { withAgentDatabaseMaintenanceLease } from "./openclaw-agent-db-maintenance-lease.js";
-import { StateDatabaseReadAdmissionInvalidatedError } from "./openclaw-state-db-async-lifecycle.js";
+import {
+  createOpenClawDatabaseMaintenanceScope,
+  StateDatabaseReadAdmissionInvalidatedError,
+} from "./openclaw-state-db-async-lifecycle.js";
 import {
   OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
   OPENCLAW_STATE_SCHEMA_VERSION,
@@ -44,6 +48,79 @@ function controlElapsedTime() {
     elapsedMs += milliseconds;
   };
 }
+
+it.each([false, true])(
+  "records an uncoded native open failure during acquisition (prepare: %s)",
+  async (prepareDatabase) => {
+    await withOpenClawTestState({ label: "lease-native-open-failure" }, async (state) => {
+      const failure = new Error("native SQLite open unavailable");
+      const open = nodeSqlite.openNodeSqliteDatabase;
+      const pathname = resolveOpenClawStateSqlitePath(state.env);
+      vi.spyOn(nodeSqlite, "openNodeSqliteDatabase").mockImplementation((location, options) => {
+        if (location === pathname) {
+          throw failure;
+        }
+        return open(location, options);
+      });
+      const run = vi.fn(async () => undefined);
+      await expect(
+        withOpenClawStateLease(
+          {
+            scope: "core:test",
+            key: "native-open-failure",
+            database: { scope: "shared", options: { env: state.env } },
+            leaseMs: 60_000,
+            waitMs: 5_000,
+            prepareDatabase,
+          },
+          run,
+        ),
+      ).rejects.toMatchObject({
+        outcome: { kind: "store-unavailable", reason: "storage-error" },
+        cause: failure,
+      });
+      expect(run).not.toHaveBeenCalled();
+    });
+  },
+);
+
+it.each([false, true])(
+  "preserves authority refusal before native open (prepare: %s)",
+  async (prepareDatabase) => {
+    await withOpenClawTestState({ label: "lease-preparation-refusal" }, async (state) => {
+      const refusal = Object.assign(new Error("caller authority refused"), {
+        code: "SQLITE_IOERR",
+      });
+      const scope = createOpenClawDatabaseMaintenanceScope();
+      const nativeOpen = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
+      const run = vi.fn(async () => undefined);
+      try {
+        await expect(
+          scope.run(() => {
+            vi.spyOn(scope, "assertAdmission").mockImplementation(() => {
+              throw refusal;
+            });
+            return withOpenClawStateLease(
+              {
+                scope: "core:test",
+                key: "preparation-refusal",
+                database: { scope: "shared", options: { env: state.env } },
+                leaseMs: 60_000,
+                waitMs: 5_000,
+                prepareDatabase,
+              },
+              run,
+            );
+          }),
+        ).rejects.toBe(refusal);
+        expect(nativeOpen).not.toHaveBeenCalled();
+        expect(run).not.toHaveBeenCalled();
+      } finally {
+        await scope.close();
+      }
+    });
+  },
+);
 
 it("preserves the caller's typed admission refusal through lease acquisition", async () => {
   await withOpenClawTestState({ label: "lease-authority-refusal" }, async (state) => {

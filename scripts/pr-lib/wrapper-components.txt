@@ -259,6 +259,7 @@ src/agents/worktrees/git-worktree-operations.runtime.ts
 src/agents/worktrees/git.ts
 src/agents/worktrees/name.ts
 src/agents/worktrees/provisioned-file-inspection.ts
+src/agents/worktrees/registry-read.kernel.ts
 src/agents/worktrees/repository-paths.ts
 src/agents/worktrees/snapshot-inventory.ts
 src/agents/worktrees/template-registry.ts
@@ -1358,6 +1359,10 @@ src/tasks/task-flow-registry.types.ts
 src/tasks/task-initial-flow.kernel.ts
 src/tasks/task-initial-flow.rules.ts
 src/tasks/task-initial.worker.ts
+src/tasks/task-registry-agent-event-commit.ts
+src/tasks/task-registry-agent-event-target.ts
+src/tasks/task-registry-agent-event.operation.ts
+src/tasks/task-registry-agent-event.worker.ts
 src/tasks/task-registry-common.ts
 src/tasks/task-registry-create-rules.ts
 src/tasks/task-registry-create.kernel.ts
