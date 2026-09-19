@@ -3,7 +3,7 @@ import { captureRuntimeConfig } from "../config/runtime-source-projection.js";
 import * as bundledHealthChecks from "../flows/bundled-health-checks.js";
 import { clearHealthChecksForTest, registerHealthCheck } from "../flows/health-check-registry.js";
 import type { HealthCheckContext } from "../flows/health-checks.js";
-import { parseReleasedDoctorLintReport } from "../infra/update-doctor-lint.released.test-support.js";
+import { parseReleasedDoctorLintReport } from "../infra/test-fixtures/update-doctor-lint.v2026-9-5.js";
 import { runDoctorLintCli } from "./doctor-lint.js";
 import { createTestConfigSnapshot, createTestRuntime } from "./test-runtime-config-helpers.js";
 

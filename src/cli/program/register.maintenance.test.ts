@@ -2,7 +2,7 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as nodeSqlite from "../../../node-sqlite.mjs";
-import { parseReleasedDoctorLintReport } from "../../infra/update-doctor-lint.released.test-support.js";
+import { parseReleasedDoctorLintReport } from "../../infra/test-fixtures/update-doctor-lint.v2026-9-5.js";
 import { ExitError } from "../../runtime.js";
 import { UpdateSchemaRefusalError } from "../../state/openclaw-update-schema-refusal.js";
 import { registerMaintenanceCommands } from "./register.maintenance.js";

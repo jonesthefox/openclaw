@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { withTempHomeConfig } from "../config/test-helpers.js";
 import { clearHealthChecksForTest, registerHealthCheck } from "../flows/health-check-registry.js";
-import { parseReleasedDoctorLintReport } from "../infra/update-doctor-lint.released.test-support.js";
+import { parseReleasedDoctorLintReport } from "../infra/test-fixtures/update-doctor-lint.v2026-9-5.js";
 import { runDoctorLintCli } from "./doctor-lint.js";
 import { createTestRuntime } from "./test-runtime-config-helpers.js";
 
