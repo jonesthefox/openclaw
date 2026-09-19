@@ -16,7 +16,6 @@ import {
   adoptUpdateRun,
   createUpdateRun,
   finishUpdateRun,
-  getUpdateRun,
   heartbeatUpdateRun,
   recordUpdateRunDiagnostic,
   recordUpdateRunPhase,
@@ -398,31 +397,17 @@ export class UpdateFinalizationLifecycle {
       return undefined;
     }
     const { env } = this.ledgerOptions;
-    let recorded: ReturnType<typeof getUpdateRun> | undefined;
-    try {
-      recorded = getUpdateRun(this.runId, this.ledgerOptions);
-    } catch (historyError) {
-      defaultRuntime.error(
-        `Could not read update recovery history: ${formatErrorMessage(historyError)}`,
-      );
-    }
     const { verifyUpdateFailureRecovery } = await import("./update-command-failure-recovery.js");
     const result: UpdateRunResult =
       error instanceof UpdateCommandFailure
         ? error.result
         : {
             status: "error",
-            mode: recorded?.target.kind === "git" ? "git" : "unknown",
+            mode: "unknown",
             root: this.root,
-            reason:
-              recorded?.reason ??
-              recorded?.steps.findLast((step) => step.status === "failed")?.step ??
-              "post-update-failed",
-            after: recorded?.after,
             steps: [],
             durationMs: Math.round(performance.now() - this.startedAt),
           };
-    result.rollbackOutcome ??= recorded?.verification.rollbackOutcome ?? undefined;
     try {
       this.failureObservation = await verifyUpdateFailureRecovery({
         result,
@@ -430,7 +415,6 @@ export class UpdateFinalizationLifecycle {
         opts: { json: this.json, run: { runId: this.runId, env } },
         env,
         timeoutMs: this.timeoutMs,
-        recordedRecovery: recorded?.verification.recovery ?? undefined,
       });
       return this.failureObservation;
     } catch (recoveryError) {

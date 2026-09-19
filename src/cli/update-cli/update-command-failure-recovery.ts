@@ -3,8 +3,7 @@ import { readActiveGatewayLockPort } from "../../infra/gateway-lock.js";
 import { readPackageVersion } from "../../infra/package-json.js";
 import { createUpdateFailureFact } from "../../infra/update-failure-facts.js";
 import { readBuiltGatewayBuildId } from "../../infra/update-git-runtime.js";
-import { recordUpdateRunDiagnostics } from "../../infra/update-run-ledger.js";
-import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
+import { getUpdateRun, recordUpdateRunDiagnostics } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { withCommandProcessScope } from "../../process/exec-spawn.js";
@@ -27,26 +26,14 @@ export async function verifyUpdateFailureRecovery(params: {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   serviceStopped?: boolean;
-  recordedRecovery?: UpdateRunResult["recovery"];
   assertCurrent?: () => void;
 }): Promise<UpdateRunResult> {
   params.assertCurrent?.();
   const startedAt = Date.now();
   const result = params.result;
   const env = params.env ?? params.opts.run?.env ?? process.env;
-  const suppliedRecovery = result.recovery;
-  const recordedRecovery = params.recordedRecovery;
-  const previousRecovery =
-    suppliedRecovery?.serviceRestartSafe === false &&
-    suppliedRecovery.reason === "runtime-verification-failed" &&
-    recordedRecovery?.serviceRestartSafe === false &&
-    recordedRecovery.reason !== "runtime-verification-failed"
-      ? recordedRecovery
-      : (suppliedRecovery ?? recordedRecovery);
-  result.recovery = previousRecovery;
-  result.verification = {};
   const root = result.root ?? params.root;
-  const rollback = result.recovery?.packageRollbackVerified;
+  const run = params.opts.run;
   const warnRecording = (message: string) => {
     params.assertCurrent?.();
     defaultRuntime.error(message);
@@ -59,6 +46,24 @@ export async function verifyUpdateFailureRecovery(params: {
       advisory: { kind: "recoverable-maintenance", message },
     });
   };
+  let recorded: ReturnType<typeof getUpdateRun> | undefined;
+  try {
+    recorded = run ? getUpdateRun(run.runId, { env: run.env }) : undefined;
+  } catch (error) {
+    if (hasCommandProcessCleanupError(error)) {
+      throw error;
+    }
+    warnRecording(`Could not read update recovery history: ${formatErrorMessage(error)}`);
+  }
+  const constraint = recorded?.verification.recovery;
+  const previousRecovery =
+    constraint?.serviceRestartSafe === false && constraint.reason !== "runtime-verification-failed"
+      ? constraint
+      : (result.recovery ?? constraint ?? undefined);
+  result.recovery = previousRecovery;
+  result.rollbackOutcome ??= recorded?.verification.rollbackOutcome ?? undefined;
+  result.verification = {};
+  const rollback = previousRecovery?.packageRollbackVerified;
   try {
     await withCommandProcessScope(async () => {
       if (params.serviceStopped) {
@@ -167,32 +172,18 @@ export async function verifyUpdateFailureRecovery(params: {
       ? { ...previousRecovery, service: undefined, reason: "gateway-probe-failed" }
       : (previousRecovery ?? { serviceRestartSafe: false, reason: "runtime-verification-failed" });
   }
-  const run = params.opts.run;
   if (run) {
     params.assertCurrent?.();
-    recordUpdateRunDiagnostics(
+    const saved = recordUpdateRunDiagnostics(
       run.runId,
-      (recorded) => {
+      () => {
         params.assertCurrent?.();
-        if (
-          recorded.recovery?.serviceRestartSafe === false &&
-          recorded.recovery.reason !== "runtime-verification-failed"
-        ) {
-          result.recovery = recorded.recovery;
-        }
-        return {
-          recovery: result.recovery,
-          observation: {
-            verification: result.verification ?? {},
-            steps: result.steps
-              .filter((step) => step.name === "gateway recovery verification")
-              .flatMap(updateRunStepsFromResultStep),
-          },
-        };
+        return result;
       },
       warnRecording,
       { env: run.env },
     );
+    result.recovery = saved?.verification.recovery ?? result.recovery;
   }
   return result;
 }

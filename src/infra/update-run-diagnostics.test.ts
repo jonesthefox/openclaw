@@ -51,10 +51,17 @@ it("keeps recovery observations atomic across a busy write without revising the 
       run.runId,
       (recorded) => ({
         recovery: recorded.recovery,
-        observation: {
-          verification: { readyz: false, settled: false },
-          steps: [{ step: "gateway recovery verification", status: "completed", exitCode: null }],
-        },
+        verification: { readyz: false, settled: false },
+        steps: [
+          {
+            name: "gateway recovery verification",
+            command: "gateway verification",
+            cwd: "",
+            durationMs: 0,
+            exitCode: null,
+            advisory: { kind: "recoverable-maintenance", message: "Gateway readiness is pending" },
+          },
+        ],
       }),
       warn,
       options,

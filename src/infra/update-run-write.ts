@@ -103,14 +103,10 @@ export function mutateRun(
 }
 
 type RecoveryDiagnostics = Pick<UpdateRunRecord["verification"], "recovery" | "rollbackOutcome">;
-type UpdateRunDiagnostics = RecoveryDiagnostics & {
-  failure?: Pick<UpdateRunStep, "step" | "detail" | "failureFacts">;
-  observation?: {
-    verification: Omit<UpdateRunRecord["verification"], "recovery" | "rollbackOutcome">;
-    steps: UpdateRunStep[];
+type UpdateRunDiagnostics = RecoveryDiagnostics &
+  Partial<Pick<UpdateRunResult, "verification" | "steps">> & {
+    failure?: Pick<UpdateRunStep, "step" | "detail" | "failureFacts">;
   };
-};
-
 type UpdateRunDiagnosticsInput =
   | UpdateRunDiagnostics
   | ((recorded: Readonly<RecoveryDiagnostics>) => UpdateRunDiagnostics);
@@ -119,39 +115,40 @@ function applyUpdateRunDiagnostics(
   record: UpdateRunRecord,
   diagnostics: UpdateRunDiagnosticsInput,
 ): void {
-  const { failure, rollbackOutcome, observation, ...rest } =
-    typeof diagnostics === "function" ? diagnostics(record.verification) : diagnostics;
-  let { recovery } = rest;
+  const {
+    failure,
+    verification,
+    steps,
+    recovery: observedRecovery,
+    rollbackOutcome,
+  } = typeof diagnostics === "function" ? diagnostics(record.verification) : diagnostics;
   if (failure && record.status === "running") {
     upsertStep(record, { ...failure, status: "failed" });
   }
-  const lifecycle = observation
-    ? {
-        recovery: record.verification.recovery,
-        rollbackOutcome: record.verification.rollbackOutcome,
-        booted: record.verification.booted,
-        noticeDelivered: record.verification.noticeDelivered,
-        doctorHint: record.verification.doctorHint,
-      }
-    : {};
-  if (observation) {
-    if (
-      record.verification.recovery?.serviceRestartSafe === false &&
-      record.verification.recovery.reason !== "runtime-verification-failed"
-    ) {
-      recovery = record.verification.recovery;
-    }
-    // One probe replaces its facts and proof together, even for a terminal run.
+  if (verification) {
+    const { recovery, rollbackOutcome, booted, noticeDelivered, doctorHint } = record.verification;
+    record.verification = { recovery, rollbackOutcome, booted, noticeDelivered, doctorHint };
     record.confirmedAtMs = null;
-    record.verification = lifecycle;
-    for (const step of observation.steps) {
-      upsertStep(record, { failureFacts: undefined, detail: undefined, ...step });
+    for (const step of (steps ?? []).flatMap(updateRunStepsFromResultStep)) {
+      upsertStep(record, {
+        ...(step.step === "gateway recovery verification"
+          ? { failureFacts: undefined, detail: undefined }
+          : {}),
+        ...step,
+      });
     }
   }
-  if (recovery || rollbackOutcome || observation) {
+  const constraint = record.verification.recovery;
+  const recovery =
+    verification &&
+    constraint?.serviceRestartSafe === false &&
+    constraint.reason !== "runtime-verification-failed"
+      ? constraint
+      : observedRecovery;
+  if (recovery || rollbackOutcome || verification) {
     recordUpdateRunVerificationRecord(record, {
-      ...observation?.verification,
-      ...lifecycle,
+      ...verification,
+      ...(verification ? record.verification : {}),
       ...(recovery ? { recovery } : {}),
       ...(rollbackOutcome ? { rollbackOutcome } : {}),
     });
@@ -164,7 +161,7 @@ export function recordUpdateRunDiagnostics(
   diagnostics: UpdateRunDiagnosticsInput,
   warn: (message: string) => void,
   options: UpdateRunLedgerOptions = {},
-): void {
+): UpdateRunRecord | undefined {
   try {
     if (
       typeof diagnostics !== "function" &&
@@ -172,12 +169,12 @@ export function recordUpdateRunDiagnostics(
         diagnostics.failure ||
         diagnostics.recovery ||
         diagnostics.rollbackOutcome ||
-        diagnostics.observation
+        diagnostics.verification
       )
     ) {
       return;
     }
-    mutateRun(
+    return mutateRun(
       runId,
       (record) => {
         applyUpdateRunDiagnostics(record, diagnostics);
@@ -199,7 +196,7 @@ export function finishUpdateRun(
   runId: string,
   result: FinishUpdateRunResult & {
     before?: UpdateRunRecord["before"];
-    diagnostics?: Pick<UpdateRunResult, "verification" | "steps" | "recovery" | "rollbackOutcome">;
+    diagnostics?: UpdateRunDiagnostics;
   },
   options: UpdateRunLedgerOptions = {},
 ): UpdateRunRecord {
@@ -208,21 +205,11 @@ export function finishUpdateRun(
     (record) => {
       const diagnostics = result.diagnostics;
       if (diagnostics) {
-        const steps = diagnostics.steps.flatMap(updateRunStepsFromResultStep);
-        applyUpdateRunDiagnostics(record, {
-          recovery: diagnostics.recovery,
-          rollbackOutcome: diagnostics.rollbackOutcome,
-          ...(diagnostics.verification
-            ? {
-                observation: {
-                  verification: diagnostics.verification,
-                  steps: steps.filter((step) => step.step === "gateway recovery verification"),
-                },
-              }
-            : {}),
-        });
-        for (const step of steps) {
-          upsertStep(record, step);
+        applyUpdateRunDiagnostics(record, diagnostics);
+        if (!diagnostics.verification) {
+          for (const step of (diagnostics.steps ?? []).flatMap(updateRunStepsFromResultStep)) {
+            upsertStep(record, step);
+          }
         }
       }
       if (record.status === "running") {
