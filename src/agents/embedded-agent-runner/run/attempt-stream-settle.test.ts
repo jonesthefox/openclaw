@@ -17,6 +17,7 @@ import { createAssistantMessageEventStream } from "../../../llm/utils/event-stre
 import { attachRuntimePromptMediaFacts } from "../../../media/media-facts.js";
 import { withPluginRuntimeGenerationScope } from "../../../plugins/runtime/generation-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import { closeOpenClawAgentDatabasesAsync } from "../../../state/openclaw-agent-db.js";
 import { runOpenClawAgentWorkerWrite } from "../../../state/openclaw-agent-write-admission.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { createOperationalRunInstanceRef } from "../../admitted-run-context.js";
@@ -475,6 +476,7 @@ describe("attempt projection persistence through settlement", () => {
       }
     } finally {
       clearEmbeddedSessionPromptStates([scope.sessionId]);
+      await closeOpenClawAgentDatabasesAsync(dir);
       await fs.rm(dir, { recursive: true, force: true });
     }
   });

@@ -364,6 +364,7 @@ export function appendTranscriptEventSnapshotSync(
   scope: SessionTranscriptWriteScope,
   event: TranscriptEvent,
   options: TranscriptEventAppendOptions = {},
+  projection?: { scheduleProjectionReconcile: false; onProjectionReconcileNeeded: () => void },
 ): Result<TranscriptWriteSnapshot<TranscriptEventAppendResult>, TranscriptAppendRefusal> {
   assertNonMessageTranscriptEvent(event);
   return runTranscriptWriteSnapshotSync(
@@ -375,7 +376,9 @@ export function appendTranscriptEventSnapshotSync(
         event,
         options,
       );
-      if (appendTranscriptEventInTransaction(database, resolved, resolvedEvent) === false) {
+      if (
+        appendTranscriptEventInTransaction(database, resolved, resolvedEvent, projection) === false
+      ) {
         return { appended: false };
       }
       if (

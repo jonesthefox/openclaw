@@ -127,7 +127,7 @@ describe("SessionManager stale-parent rebase", () => {
       now: 2,
     });
 
-    const modelChangeId = manager.appendModelChange("openai", "gpt-5.6");
+    const modelChangeId = await manager.appendModelChange("openai", "gpt-5.6");
 
     expect(manager.getEntry(modelChangeId)?.parentId).toBe("out-of-band");
     expect(manager.getBranch().map((entry) => entry.id)).toEqual([
@@ -175,7 +175,7 @@ describe("SessionManager stale-parent rebase", () => {
       ),
     ).toBe(true);
 
-    const modelChangeId = manager.appendModelChange("openai", "gpt-5.6");
+    const modelChangeId = await manager.appendModelChange("openai", "gpt-5.6");
 
     expect(manager.getBranch().map((entry) => entry.id)).toEqual([base.messageId, modelChangeId]);
     const reloadedBase = manager.getEntry(base.messageId);

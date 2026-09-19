@@ -59,6 +59,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../state/openclaw-agent-execution.worker",
     distWorkerPath: "state/openclaw-agent-execution.worker.js",
   },
+  sessionManagerMetadata: {
+    currentModuleUrl,
+    sourceWorkerName: "../agents/sessions/session-manager-metadata.worker",
+    distWorkerPath: "agents/sessions/session-manager-metadata.worker.js",
+  },
   sqliteStore: {
     currentModuleUrl,
     sourceWorkerName: "sqlite-store.worker",
