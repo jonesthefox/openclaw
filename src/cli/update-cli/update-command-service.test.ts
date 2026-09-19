@@ -66,7 +66,6 @@ vi.mock("./update-command-config-snapshot.js", () => ({
   createUpdateConfigSnapshot: mocks.createUpdateConfigSnapshot,
 }));
 
-import { GatewayRestartHealthError } from "./update-command-service-command.js";
 import { maybeRestartService } from "./update-command-service.js";
 
 const gateway = { bootId: "test-boot", version: "2026.9.1", buildId: "new-build" };
@@ -96,10 +95,7 @@ describe("maybeRestartService", () => {
   it.each(["refresh inspection", "restart inspection", "restart command"] as const)(
     "does not continue restart work after uncertain cleanup from %s",
     async (source) => {
-      const cleanup = new CommandProcessCleanupError();
-      const failure = new GatewayRestartHealthError("readiness cleanup uncertain", {
-        cause: cleanup,
-      });
+      const failure = new CommandProcessCleanupError();
       if (source === "restart command") {
         mocks.runUpdatedInstallGatewayCommand.mockRejectedValueOnce(failure);
       } else {

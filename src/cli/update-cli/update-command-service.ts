@@ -607,10 +607,7 @@ export async function maybeRestartService(params: {
         recordPhase("restarting");
         const restart = await runUpdatedInstallGatewayCommand(activation, "restart").catch(
           (error: unknown) => {
-            if (
-              hasCommandProcessCleanupError(error) ||
-              !(error instanceof GatewayRestartHealthError)
-            ) {
+            if (!(error instanceof GatewayRestartHealthError)) {
               throw error;
             }
             // Activation succeeded; the update verifier owns the longer readiness budget.
