@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
 import { PLUGIN_CAPABILITY_CONSENT_REQUIRED } from "../../../../packages/gateway-protocol/src/capability-consent-error-details.js";
 import { stripAnsi } from "../../../../packages/terminal-core/src/ansi.js";
+import { formatCliCommand } from "../../../cli/command-format.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
 import type { PluginCapabilityConsentHandler } from "../../../plugins/capability-consent.js";
@@ -15,11 +16,16 @@ import {
 } from "../../../plugins/install-transaction.js";
 import { PLUGIN_INSTALL_ERROR_CODE } from "../../../plugins/install-types.js";
 import { writePersistedInstalledPluginIndexInstallRecordsWithLease } from "../../../plugins/installed-plugin-index-records.js";
+import { resolveTrustedSourceLinkedOfficialNpmInstall } from "../../../plugins/official-external-install-records.js";
 import { isPayloadMissing } from "../../../plugins/payload-verification.js";
 import {
   withPluginLifecycleLease,
   type PluginLifecycleLeaseContext,
 } from "../../../plugins/plugin-lifecycle-lease.js";
+import {
+  detectPluginVersionDrift,
+  resolveOfficialPluginCohortNpmSpecs,
+} from "../../../plugins/plugin-version-drift.js";
 import { updateNpmInstalledPlugins, type PluginUpdateOutcome } from "../../../plugins/update.js";
 import { resolveUserPath } from "../../../utils.js";
 import { resolveCompatibilityHostVersion } from "../../../version.js";
@@ -90,6 +96,7 @@ export async function repairMissingConfiguredPluginInstalls(params: {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   workTimeoutMs?: number | null;
+  repairVersionDrift?: boolean;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   onWarning?: (warning: PluginInstallRepairWarning) => void;
   beforePersistentEffect?: () => void | Promise<void>;
@@ -110,6 +117,7 @@ export async function repairMissingConfiguredPluginInstalls(params: {
     pluginIds: collectConfiguredPluginIds(params.cfg, params.env),
     channelIds: collectConfiguredChannelIds(params.cfg, params.env),
     blockedPluginIds: collectBlockedPluginIds(params.cfg),
+    repairVersionDrift: params.repairVersionDrift,
     onWarning: params.onWarning,
     ...(params.onCapabilityConsent ? { onCapabilityConsent: params.onCapabilityConsent } : {}),
     beforePersistentEffect: params.beforePersistentEffect,
@@ -161,6 +169,7 @@ async function repairMissingPluginInstalls(params: {
   pluginIds: ReadonlySet<string>;
   channelIds: ReadonlySet<string>;
   blockedPluginIds?: ReadonlySet<string>;
+  repairVersionDrift?: boolean;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   workTimeoutMs?: number | null;
@@ -217,6 +226,43 @@ async function repairMissingPluginInstallsWithLease(
   const deferredRepairDetails: string[] = [];
   const failedPlugins = new Map<string, PluginUpdateOutcome | undefined>();
   const repairedPluginIds = new Set<string>();
+  const coreVersion = resolveCompatibilityHostVersion(env);
+  const cohortSpecs = resolveOfficialPluginCohortNpmSpecs({
+    gatewayVersion: coreVersion,
+    installRecords: records,
+    config: params.cfg,
+  });
+  const driftedPluginIds = new Set(
+    params.repairVersionDrift && !shouldDeferConfiguredPluginInstallRepair(env)
+      ? detectPluginVersionDrift({
+          gatewayVersion: coreVersion,
+          installRecords: records,
+          config: params.cfg,
+        }).drifts.flatMap(({ pluginId }) => {
+          const record = records[pluginId];
+          if (
+            !record ||
+            !cohortSpecs[pluginId] ||
+            operatorManagedPluginIds.has(pluginId) ||
+            bundledPluginsById.has(pluginId) ||
+            officialReplacementPluginIds.has(pluginId)
+          ) {
+            return [];
+          }
+          // Package-id migrations also change authored policy; the plugin command owns that write.
+          if (
+            resolveTrustedSourceLinkedOfficialNpmInstall({ pluginId, record })?.replacementPluginId
+          ) {
+            warn(
+              `Plugin "${pluginId}" needs a package-id migration. Run ${formatCliCommand(`openclaw plugins update ${cohortSpecs[pluginId]}`, env)}.`,
+              pluginId,
+            );
+            return [];
+          }
+          return [pluginId];
+        })
+      : [],
+  );
   const deferredPluginIds = new Set<string>();
   const preferNpmInstalls = isLegacyPackageUpdateDoctorPass(env);
   let nextRecords = records;
@@ -320,7 +366,8 @@ async function repairMissingPluginInstallsWithLease(
       ((params.pluginIds.has(pluginId) &&
         (!knownIds.has(pluginId) || isPayloadMissing(env, nextRecords[pluginId]?.installPath))) ||
         configuredPluginIdsWithStaleDescriptors.has(pluginId) ||
-        installedPluginIdsWithRepairablePackages.has(pluginId)),
+        installedPluginIdsWithRepairablePackages.has(pluginId) ||
+        driftedPluginIds.has(pluginId)),
   );
   const missingRecordedPluginIds = missingRecordedPlugins.map(([pluginId]) => pluginId);
 
@@ -329,7 +376,8 @@ async function repairMissingPluginInstallsWithLease(
     const repairRecords = { ...nextRecords };
     for (const [pluginId, record] of missingRecordedPlugins) {
       if (
-        !installedPluginIdsWithStaleVersionBoundRuntimePackages.has(pluginId) ||
+        (!installedPluginIdsWithStaleVersionBoundRuntimePackages.has(pluginId) &&
+          !driftedPluginIds.has(pluginId)) ||
         installedPluginIdsWithRepairablePackageDiagnostics.has(pluginId) ||
         configuredPluginIdsWithStaleDescriptors.has(pluginId) ||
         isPayloadMissing(env, record.installPath)
@@ -349,9 +397,13 @@ async function repairMissingPluginInstallsWithLease(
         pluginIds: missingRecordedPluginIds,
         timeoutMs: params.timeoutMs,
         workTimeoutMs: params.workTimeoutMs,
+        specOverrides: Object.fromEntries(
+          Object.entries(cohortSpecs).filter(([pluginId]) => driftedPluginIds.has(pluginId)),
+        ),
+        retainOnUnavailable: true,
         skipDisabledPlugins: true,
         updateChannel,
-        coreVersion: resolveCompatibilityHostVersion(env),
+        coreVersion,
         logger: {
           terminalLinks: false,
           warn: (message) => {
@@ -368,6 +420,10 @@ async function repairMissingPluginInstallsWithLease(
       }),
     );
     for (const outcome of updateResult.outcomes) {
+      if (outcome.status === "unchanged" && outcome.code === "plugin-target-unavailable") {
+        recordFailure(outcome.pluginId, [outcome.message], outcome.code);
+        continue;
+      }
       if (
         outcome.status === "unchanged" &&
         updateResult.config.plugins?.installs?.[outcome.pluginId] ===
@@ -378,11 +434,13 @@ async function repairMissingPluginInstallsWithLease(
         repairedPluginIds.add(outcome.pluginId);
         failedPlugins.delete(outcome.pluginId);
         changes.push(
-          installedPluginIdsWithStaleVersionBoundRuntimePackages.has(outcome.pluginId)
-            ? `Refreshed stale configured plugin "${outcome.pluginId}".`
-            : installedPluginIdsWithRepairablePackageDiagnostics.has(outcome.pluginId)
-              ? `Repaired broken installed plugin "${outcome.pluginId}".`
-              : `Repaired missing configured plugin "${outcome.pluginId}".`,
+          driftedPluginIds.has(outcome.pluginId)
+            ? `Updated official plugin "${outcome.pluginId}" from ${outcome.currentVersion ?? records[outcome.pluginId]?.version} to ${outcome.nextVersion ?? coreVersion}.`
+            : installedPluginIdsWithStaleVersionBoundRuntimePackages.has(outcome.pluginId)
+              ? `Refreshed stale configured plugin "${outcome.pluginId}".`
+              : installedPluginIdsWithRepairablePackageDiagnostics.has(outcome.pluginId)
+                ? `Repaired broken installed plugin "${outcome.pluginId}".`
+                : `Repaired missing configured plugin "${outcome.pluginId}".`,
         );
       } else if (outcome.status === "error" || isActionableClawHubSkippedOutcome(outcome)) {
         recordFailure(outcome.pluginId, [outcome.message], outcome.code);
@@ -525,6 +583,11 @@ async function repairMissingPluginInstallsWithLease(
     );
   }
   const pluginInventoryChanged = nextRecords !== persistedRecords || repairedPluginIds.size > 0;
+  if ([...driftedPluginIds].some((pluginId) => repairedPluginIds.has(pluginId))) {
+    changes.push(
+      `If the Gateway is not restarted by Doctor, run ${formatCliCommand("openclaw gateway restart", env)} to load the updated plugins.`,
+    );
+  }
   const outcomes = [
     ...sourceOutcomes,
     ...[...failedPlugins.values()].filter((outcome) => outcome !== undefined),
