@@ -36,32 +36,66 @@ function run(patch: Partial<UpdateRunRecord> = {}): UpdateRunRecord {
 afterEach(() => vi.restoreAllMocks());
 
 describe("update run report", () => {
-  it("reports observed serving health while preserving an unsafe restart constraint", async () => {
-    const record = run({
-      status: "failed",
-      reason: "post-update-plugins",
-      steps: [{ step: "gateway recovery verification", status: "completed", exitCode: 0 }],
-      verification: {
-        runningVersion: "2026.9.5",
-        versionMatch: true,
-        readyz: true,
-        settled: true,
-        recovery: { serviceRestartSafe: false, reason: "state-migration-started" },
-      },
-    });
-    const expected = "verified serving 2026.9.5; restart remains unsafe (state-migration-started)";
-    expect(renderUpdateRunReport(record).markdown).toContain(expected);
-    const report = await prepareUpdateFailureReport(
-      {
-        attemptId: record.runId,
-        recordedRun: record,
-        result: { status: "error", mode: "npm", steps: [], durationMs: 0 },
-      },
-      { stateDir: "/fixture/state", env: {} },
-    );
-    expect(report.body).toContain(`Recovery outcome: ${expected}`);
-    expect(record.verification.recovery?.serviceRestartSafe).toBe(false);
-  });
+  it.each([false, true])(
+    "reports serving health with its unsafe constraint (raw=%s)",
+    async (raw) => {
+      const record = run({
+        status: "failed",
+        reason: "post-update-plugins",
+        steps: [{ step: "gateway recovery verification", status: "completed", exitCode: 0 }],
+        verification: {
+          runningVersion: "2026.9.5",
+          versionMatch: true,
+          readyz: true,
+          settled: true,
+          recovery: { serviceRestartSafe: false, reason: "state-migration-started" },
+        },
+      });
+      const expected =
+        "verified serving 2026.9.5; restart remains unsafe (state-migration-started)";
+      expect(renderUpdateRunReport(record).markdown).toContain(expected);
+      const report = await prepareUpdateFailureReport(
+        {
+          attemptId: record.runId,
+          recordedRun: record,
+          result: {
+            status: "error",
+            mode: "npm",
+            durationMs: 0,
+            ...(raw
+              ? {
+                  verification: {
+                    runningVersion: "2026.9.5",
+                    versionMatch: true,
+                    readyz: true,
+                    settled: true,
+                  },
+                  recovery: {
+                    serviceRestartSafe: true as const,
+                    service: "healthy" as const,
+                    version: "2026.9.5",
+                  },
+                }
+              : {}),
+            steps: raw
+              ? [
+                  {
+                    name: "gateway recovery verification",
+                    command: "verify",
+                    cwd: "/fixture",
+                    durationMs: 0,
+                    exitCode: 0,
+                  },
+                ]
+              : [],
+          },
+        },
+        { stateDir: "/fixture/state", env: {} },
+      );
+      expect(report.body).toContain(`Recovery outcome: ${expected}`);
+      expect(record.verification.recovery?.serviceRestartSafe).toBe(false);
+    },
+  );
 
   it.each([
     ["external-supervisor-update-required", "Use your server or deployment's update workflow"],

@@ -87,23 +87,41 @@ export function formatUpdateRunCurrentHealth(health: UpdateRunReportHealth): str
 }
 
 /** Public-report callers redact identifiers before using this shared formatter. */
-export function formatObservedUpdateRecovery(
-  recovery: UpdateRunRecord["verification"]["recovery"],
+export function formatUpdateRunRecovery(
+  verification: UpdateRunRecord["verification"],
   observation: Pick<UpdateRunRecord["steps"][number], "failureFacts" | "exitCode"> | undefined,
-  verification?: UpdateRunRecord["verification"],
+  reason = verification.recovery?.reason ?? "not-recorded",
 ): string | undefined {
+  const { recovery } = verification;
   if (!observation) {
-    return undefined;
+    if (!recovery) {
+      return undefined;
+    }
+    const restored = recovery.packageRollbackVerified;
+    if (!recovery.serviceRestartSafe) {
+      return `${restored ? "package rollback verified; service restart not verified" : "not verified"} (${reason})`;
+    }
+    const version = bounded(recovery.version, 120);
+    if (recovery.service === "healthy") {
+      return `${restored ? "package rollback verified; " : ""}Gateway serving ${version}; health verified`;
+    }
+    if (recovery.service !== "failed" && !restored) {
+      return "verified safe to restart";
+    }
+    const packageOutcome = restored
+      ? `package rollback verified (${version})`
+      : "runtime files verified";
+    return `${packageOutcome}; Gateway health ${recovery.service === "failed" ? "failed" : "unverified"} (${reason}). Run \`openclaw gateway status --deep\` to check the serving version and readiness.`;
   }
   const version =
     recovery?.serviceRestartSafe && recovery.service === "healthy"
       ? recovery.version
-      : verification?.versionMatch && verification.readyz && verification.settled
+      : verification.versionMatch && verification.readyz && verification.settled
         ? verification.runningVersion
         : undefined;
   if (observation.exitCode === 0 && version && !observation.failureFacts?.length) {
     const constraint =
-      recovery?.serviceRestartSafe === false ? `; restart remains unsafe (${recovery.reason})` : "";
+      recovery?.serviceRestartSafe === false ? `; restart remains unsafe (${reason})` : "";
     return `${recovery?.packageRollbackVerified ? "package rollback verified; " : ""}verified serving ${bounded(version, 120)}${constraint}`;
   }
   const code = observation.failureFacts?.[0]?.code;
@@ -296,11 +314,8 @@ export function renderUpdateRunReport(
   }
   const verification: string[] = [];
   const facts = run.verification;
-  const recovery = formatObservedUpdateRecovery(
-    facts.recovery,
-    run.steps.findLast((step) => step.step === "gateway recovery verification"),
-    facts,
-  );
+  const observation = run.steps.findLast((step) => step.step === "gateway recovery verification");
+  const recovery = observation && formatUpdateRunRecovery(facts, observation);
   if (recovery) {
     lines.push(`Recovery: ${recovery}.`);
   }
@@ -398,7 +413,17 @@ export function renderUpdateRunReport(
 }
 
 /** Old CLI finalization paths still return runner results; all wording stays in the report. */
-export function updateRunReportInputFromResult(result: UpdateRunResult): ReportInput {
+export function updateRunReportInputFromResult(
+  result: UpdateRunResult,
+  recorded?: Partial<ReportInput>,
+): ReportInput {
+  const steps = result.steps.flatMap(updateRunStepsFromResultStep);
+  const observationStep = (name: string) =>
+    name === "gateway verification" || name === "gateway recovery verification";
+  const observations = steps.filter((entry) => observationStep(entry.step));
+  const preserveRecorded = result.status === "ok" && result.verification === undefined;
+  const { booted, noticeDelivered, doctorHint, recovery, rollbackOutcome } =
+    recorded?.verification ?? {};
   return {
     status: result.status === "ok" ? "succeeded" : result.status === "error" ? "failed" : "skipped",
     phase: "finished",
@@ -406,14 +431,27 @@ export function updateRunReportInputFromResult(result: UpdateRunResult): ReportI
     origin: {},
     before: result.before ?? {},
     after: result.after ?? {},
-    verification: {
-      ...result.verification,
-      recovery: result.recovery,
-      rollbackOutcome: result.rollbackOutcome,
-    },
     repair: [],
     downtimeMs: null,
-    steps: result.steps.flatMap(updateRunStepsFromResultStep),
+    ...recorded,
+    verification:
+      preserveRecorded && recorded?.verification
+        ? recorded.verification
+        : {
+            ...(result.verification ?? recorded?.verification),
+            ...(recorded?.verification ? { booted, noticeDelivered, doctorHint } : {}),
+            recovery:
+              recovery?.serviceRestartSafe === false &&
+              recovery.reason !== "runtime-verification-failed"
+                ? recovery
+                : (result.recovery ?? (result.verification === undefined ? recovery : undefined)),
+            rollbackOutcome: result.rollbackOutcome ?? rollbackOutcome,
+          },
+    steps: !recorded?.steps
+      ? steps
+      : !preserveRecorded && (result.verification !== undefined || observations.length)
+        ? [...recorded.steps.filter((entry) => !observationStep(entry.step)), ...observations]
+        : recorded.steps,
   };
 }
 

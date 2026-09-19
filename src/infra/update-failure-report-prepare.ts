@@ -33,9 +33,10 @@ import {
 import type { UpdateRunRecord } from "./update-run-record.js";
 import { readUpdateRunReportHealth } from "./update-run-report-health.js";
 import {
-  formatObservedUpdateRecovery,
+  formatUpdateRunRecovery,
   formatUpdateRunCurrentHealth,
   formatUpdateRunIdentity,
+  updateRunReportInputFromResult,
 } from "./update-run-report.js";
 import type { UpdateRunResult, UpdateStepResult } from "./update-runner.js";
 
@@ -213,70 +214,35 @@ function resolveRecoveryOutcome(
   input: UpdateFailureReportInput,
   context: UpdateFailureReportContext,
 ): string {
-  const result = {
-    ...input.result,
-    recovery: input.result.recovery ?? input.recordedRun?.verification?.recovery,
-  };
-  const observation =
-    result.steps.findLast((step) => step.name === "gateway recovery verification") ??
-    input.recordedRun?.steps.findLast((step) => step.step === "gateway recovery verification");
-  const verification = input.result.verification ?? input.recordedRun?.verification;
-  const observed = formatObservedUpdateRecovery(
-    result.recovery?.serviceRestartSafe
-      ? { ...result.recovery, version: redactPublicSupportVersion(result.recovery.version) }
-      : result.recovery,
-    observation && {
-      exitCode: observation.exitCode,
-      failureFacts: observation.failureFacts?.map((fact) => ({
-        check: fact.check,
-        code: isPublicUpdateFailureCode(fact.code) ? fact.code : "gateway-probe-failed",
-      })),
-    },
-    verification && {
-      ...verification,
-      runningVersion: verification.runningVersion
-        ? redactPublicSupportVersion(verification.runningVersion)
-        : undefined,
-    },
+  const { verification, steps } = updateRunReportInputFromResult(input.result, input.recordedRun);
+  const recovery = verification.recovery;
+  const observation = steps.findLast((step) => step.step === "gateway recovery verification");
+  return (
+    formatUpdateRunRecovery(
+      {
+        ...verification,
+        recovery: recovery?.serviceRestartSafe
+          ? { ...recovery, version: redactPublicSupportVersion(recovery.version) }
+          : recovery,
+        runningVersion: verification.runningVersion
+          ? redactPublicSupportVersion(verification.runningVersion)
+          : undefined,
+      },
+      observation && {
+        exitCode: observation.exitCode,
+        failureFacts: observation.failureFacts?.map((fact) => ({
+          check: fact.check,
+          code: isPublicUpdateFailureCode(fact.code) ? fact.code : "gateway-probe-failed",
+        })),
+      },
+      sanitizeReportField(recovery?.reason ?? "not-recorded", context, 96),
+    ) ??
+    (steps.some(
+      (step) => step.step === "finalize:package-rollback-not-needed" && step.status === "skipped",
+    )
+      ? "package rollback not needed: no package mutation"
+      : "not recorded")
   );
-  if (observed) {
-    return observed;
-  }
-  if (result.recovery?.serviceRestartSafe === true) {
-    const version = redactPublicSupportVersion(result.recovery.version);
-    const restored = result.recovery.packageRollbackVerified === true;
-    if (result.recovery.service === "healthy") {
-      return `${restored ? "package rollback verified; " : ""}Gateway serving ${version}; health verified`;
-    }
-    const packageOutcome = restored
-      ? `package rollback verified (${version})`
-      : "runtime files verified";
-    const reason = sanitizeReportField(result.recovery.reason ?? "not-recorded", context, 96);
-    const nextCommand =
-      "Run `openclaw gateway status --deep` to check the serving version and readiness.";
-    if (result.recovery.service === "failed") {
-      return `${packageOutcome}; Gateway health failed (${reason}). ${nextCommand}`;
-    }
-    if (restored) {
-      return `${packageOutcome}; Gateway health unverified (${reason}). ${nextCommand}`;
-    }
-    return "verified safe to restart";
-  }
-  if (result.recovery?.serviceRestartSafe === false) {
-    const outcome =
-      result.recovery.packageRollbackVerified === true
-        ? "package rollback verified; service restart not verified"
-        : "not verified";
-    return truncateUtf8Prefix(
-      `${outcome} (${sanitizeReportField(result.recovery.reason, context)})`,
-      UPDATE_REPORT_FIELD_MAX_BYTES,
-    );
-  }
-  return input.recordedRun?.steps.some(
-    (step) => step.step === "finalize:package-rollback-not-needed" && step.status === "skipped",
-  )
-    ? "package rollback not needed: no package mutation"
-    : "not recorded";
 }
 
 async function renderBoundedDiagnostics(
@@ -383,7 +349,10 @@ export async function prepareUpdateFailureReport(
   const rollback = input.result.rollbackOutcome ?? recordedRun?.verification?.rollbackOutcome;
   const action = recordedRun?.trigger ?? input.action;
   const installation = recordedRun?.target?.installationMethod;
-  const verification = input.result.verification ?? recordedRun?.verification;
+  const verification =
+    input.result.verification || recordedRun?.verification
+      ? updateRunReportInputFromResult(input.result, recordedRun).verification
+      : undefined;
   const identity = verification
     ? formatUpdateRunIdentity(verification, recordedRun?.after ?? input.result.after ?? {})
     : undefined;

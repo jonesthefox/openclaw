@@ -24,7 +24,7 @@ import { UpdateRequesterRevokedError } from "../../infra/update-requester-author
 import { UpdateRunAdmissionBusyError } from "../../infra/update-run-admission.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import type { UpdateRunRecord } from "../../infra/update-run-record.js";
-import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
+import { updateRunReportInputFromResult } from "../../infra/update-run-report.js";
 import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -430,25 +430,20 @@ export function recordUpdateResultNextAction(
 ) {
   const run = params.opts.run;
   const active = committed ?? (run ? getUpdateRun(run.runId, { env: run.env }) : undefined);
-  const observed = result.verification !== undefined;
-  const verification = result.verification ?? active?.verification;
-  const steps = observed ? result.steps.flatMap(updateRunStepsFromResultStep) : active?.steps;
-  const recordedRecovery = active?.verification.recovery;
-  const failedVerification = steps?.findLast(
+  const { verification, steps } = updateRunReportInputFromResult(result, active);
+  const failedVerification = steps.findLast(
     (step) =>
       (step.step === "gateway verification" || step.step === "gateway recovery verification") &&
       step.status === "failed",
   );
   const nextAction = resolveUpdateResultNextAction({
     result:
-      observed &&
-      recordedRecovery?.serviceRestartSafe === false &&
-      recordedRecovery.reason !== "runtime-verification-failed"
-        ? { ...result, recovery: recordedRecovery }
-        : result,
+      result.verification === undefined
+        ? result
+        : { ...result, recovery: verification.recovery ?? undefined },
     restart: params.coreAlreadyCurrent ? params.opts.restart : undefined,
-    serviceRunning: verification?.serviceRunning,
-    runningVersion: verification?.runningVersion,
+    serviceRunning: verification.serviceRunning,
+    runningVersion: verification.runningVersion,
     verificationFailure: failedVerification?.failureFacts?.length
       ? failedVerification.failureFacts.map(formatUpdateFailureFact).join("; ")
       : failedVerification?.detail,

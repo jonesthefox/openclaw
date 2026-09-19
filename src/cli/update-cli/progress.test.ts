@@ -422,6 +422,64 @@ describe("update progress", () => {
     },
   );
 
+  it("preserves a captured success receipt over stale raw recovery proof", () => {
+    const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+    const writeJson = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
+    const captured: UpdateRunRecord = {
+      ...run,
+      status: "succeeded",
+      phase: "finished",
+      after: { version: "2026.9.5" },
+      steps: [{ step: "gateway recovery verification", status: "completed", exitCode: 0 }],
+      verification: {
+        serviceRunning: true,
+        runningVersion: "2026.9.5",
+        versionMatch: true,
+        readyz: true,
+        settled: true,
+        channelsReady: true,
+        pluginErrors: [],
+        recovery: { serviceRestartSafe: true, version: "2026.9.5", service: "healthy" },
+      },
+      confirmedAtMs: 300,
+      finishedAtMs: 301,
+    };
+    const saved = structuredClone(captured);
+    const stale: UpdateRunResult = {
+      ...result,
+      after: captured.after,
+      recovery: { serviceRestartSafe: false, reason: "state-migration-started" },
+      steps: [
+        {
+          name: "gateway recovery verification",
+          command: "gateway verification",
+          cwd: "/fixture",
+          durationMs: 1,
+          exitCode: 1,
+          failureFacts: [{ check: "settled", code: "stale-readiness-failure" }],
+        },
+      ],
+    };
+    const read = vi
+      .mocked(getUpdateRun)
+      .mockClear()
+      .mockImplementation(() => {
+        throw new Error("Captured terminal publication must not reopen history.");
+      });
+
+    printResult(stale, { run: context }, { record: captured });
+
+    const output = log.mock.calls.flat().join("\n");
+    expect(output).toContain("OpenClaw updated to 2026.9.5");
+    expect(output).toContain("Recovery: verified serving 2026.9.5.");
+    expect(output).not.toContain("stale-readiness-failure");
+    expect(output).not.toContain("state-migration-started");
+    printResult(stale, { json: true, run: context }, { record: captured });
+    expect(writeJson).toHaveBeenCalledExactlyOnceWith({ ...stale, run: saved });
+    expect(read).not.toHaveBeenCalled();
+    expect(captured).toEqual(saved);
+  });
+
   it("suspends every ledger reader through activation and resumes the recorded timeline", () => {
     vi.useFakeTimers();
     const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});

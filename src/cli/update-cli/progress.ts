@@ -249,33 +249,7 @@ export function printResult(
   if (result.runId) {
     activeUpdateProgress.get(result.runId)?.(run);
   }
-  let reportInput = run ?? updateRunReportInputFromResult(result);
-  if (run && result.verification !== undefined) {
-    const observed = updateRunReportInputFromResult(result);
-    const recordedRecovery = run.verification.recovery;
-    const observationStep = (name: string) =>
-      name === "gateway verification" || name === "gateway recovery verification";
-    reportInput = {
-      ...run,
-      verification: {
-        ...observed.verification,
-        booted: run.verification.booted,
-        noticeDelivered: run.verification.noticeDelivered,
-        doctorHint: run.verification.doctorHint,
-        recovery:
-          recordedRecovery?.serviceRestartSafe === false &&
-          recordedRecovery.reason !== "runtime-verification-failed"
-            ? recordedRecovery
-            : result.recovery,
-        rollbackOutcome: result.rollbackOutcome ?? run.verification.rollbackOutcome,
-      },
-      steps: [
-        ...run.steps.filter((entry) => !observationStep(entry.step)),
-        ...observed.steps.filter((entry) => observationStep(entry.step)),
-      ],
-    };
-  }
-  const report = renderUpdateRunReport(reportInput, {
+  const report = renderUpdateRunReport(updateRunReportInputFromResult(result, run), {
     ...reportHints,
     mode: result.mode === "unknown" ? run?.target.kind : result.mode,
   });
