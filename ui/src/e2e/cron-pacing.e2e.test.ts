@@ -13,7 +13,7 @@ const suite = createControlUiE2eSuite({
   startServerBeforeBrowser: true,
 });
 const record = createRequireRecord("record", "expected-object-value");
-const source: CronStoredJob = {
+const source = {
   id: "paced-watch",
   name: "Synthetic paced watcher",
   enabled: true,
@@ -26,7 +26,7 @@ const source: CronStoredJob = {
   payload: { kind: "agentTurn", message: "Check synthetic status and choose the next check." },
   delivery: { mode: "none" },
   state: {},
-};
+} satisfies CronStoredJob;
 const list = {
   jobs: [{ ...source, configRevision: "source-revision" }],
   snapshotRevision: "pacing-proof",

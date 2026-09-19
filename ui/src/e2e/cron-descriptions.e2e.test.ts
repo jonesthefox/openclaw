@@ -96,7 +96,7 @@ suite.define(() => {
         description: "Explain the system-owned heartbeat",
         payload: { kind: "heartbeat" },
       },
-    ] satisfies CronJob[];
+    ] satisfies [CronJob, ...CronJob[]];
     const undescribedJob = cronJob("without-description", "Plain task");
     await suite.withPage(
       {
