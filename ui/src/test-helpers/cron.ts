@@ -1,4 +1,4 @@
-import type { CronCompactJob, CronJob } from "../api/types.ts";
+import type { CronCompactJob, CronJob, CronJobsListResult } from "../api/types.ts";
 import type { CronFormState } from "../lib/cron/types.ts";
 
 export function compactCronJobFixture(job: CronJob): CronCompactJob {
@@ -22,6 +22,24 @@ export function compactCronJobFixture(job: CronJob): CronCompactJob {
     lastRunError: job.state.lastError ?? null,
     runningAtMs: job.state.runningAtMs,
     autoDisabled: job.state.autoDisabled,
+  };
+}
+
+type CronListFixtureCase = {
+  match?: Record<string, unknown>;
+  response: CronJobsListResult;
+};
+
+export function cronListResponseFixture(input: CronJobsListResult | CronListFixtureCase[]) {
+  const cases: CronListFixtureCase[] = Array.isArray(input) ? input : [{ response: input }];
+  return {
+    cases: cases.flatMap((entry) => [
+      {
+        match: { ...entry.match, compact: true },
+        response: { ...entry.response, jobs: entry.response.jobs.map(compactCronJobFixture) },
+      },
+      entry,
+    ]),
   };
 }
 
