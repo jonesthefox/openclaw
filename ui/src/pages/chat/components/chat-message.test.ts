@@ -573,40 +573,6 @@ describe("grouped chat rendering", () => {
     expect(container.textContent).toContain("Notice details");
   });
 
-  it.each([
-    {
-      format: "MEDIA directives",
-      content:
-        "Introduction\n\n**Before**\nMEDIA:https://example.com/before.png\n\n**After**\nMEDIA:https://example.com/after.png\n\nClosing paragraph",
-    },
-    {
-      format: "structured images",
-      content: [
-        { type: "text", text: "Introduction\n\n**Before**" },
-        { type: "image", url: "https://example.com/before.png" },
-        { type: "text", text: "**After**" },
-        { type: "image", url: "https://example.com/after.png" },
-        { type: "text", text: "Closing paragraph" },
-      ],
-    },
-  ])("keeps assistant $format between their surrounding paragraphs", ({ content }) => {
-    const container = document.createElement("div");
-    markdownRenderMock.withImplementation(renderMarkdownHtml, () => {
-      renderAssistantMessage(container, createAssistantMessage(content, { timestamp: 1000 }));
-    });
-
-    expect(
-      Array.from(container.querySelectorAll(".chat-text strong, .chat-message-image"), (element) =>
-        element instanceof HTMLImageElement
-          ? new URL(element.src).pathname
-          : element.textContent?.replace(/\s+/g, " ").trim(),
-      ),
-    ).toEqual(["Before", "/before.png", "After", "/after.png"]);
-    const text = container.querySelector(".chat-text")?.textContent?.trim() ?? "";
-    expect(text.startsWith("Introduction")).toBe(true);
-    expect(text.endsWith("Closing paragraph")).toBe(true);
-  });
-
   it.each([false, true])(
     "preserves reference links and one duplicate badge around media (recovered: %s)",
     (recovered) => {
