@@ -183,7 +183,10 @@ export async function verifyUpdateFailureRecovery(params: {
       warnRecording,
       { env: run.env },
     );
-    result.recovery = saved?.verification.recovery ?? result.recovery;
+    // Unread history may still prohibit restart until the atomic merge confirms it.
+    result.recovery =
+      saved?.verification.recovery ??
+      (!recorded && result.recovery?.serviceRestartSafe ? undefined : result.recovery);
   }
   return result;
 }
