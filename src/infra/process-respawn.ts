@@ -23,7 +23,33 @@ type GatewayUpdateRespawnResult =
   | { mode: "disabled" | "failed"; detail?: string };
 type GatewayRespawnOptions = {
   env?: NodeJS.ProcessEnv;
+  decision?: GatewayRestartDecision;
 };
+
+export type GatewayRestartDecision =
+  | { mode: "disabled"; reason: "no-respawn" }
+  | { mode: "disabled"; reason: "unmanaged"; detail: string }
+  | {
+      mode: "supervised";
+      supervisor: NonNullable<ReturnType<typeof detectGatewayRespawnSupervisor>>;
+    };
+
+export function resolveGatewayRestartDecision(): GatewayRestartDecision {
+  if (isTruthyEnvValue(process.env.OPENCLAW_NO_RESPAWN)) {
+    return { mode: "disabled", reason: "no-respawn" };
+  }
+  const supervisor = detectGatewayRespawnSupervisor(process.env);
+  if (supervisor) {
+    return { mode: "supervised", supervisor };
+  }
+  const detail =
+    process.platform === "win32"
+      ? "win32: detached respawn unsupported without Scheduled Task markers"
+      : isContainerEnvironment()
+        ? "container: use in-process restart to keep PID 1 alive"
+        : "unmanaged: use in-process restart to keep custom supervisor PID tracking stable";
+  return { mode: "disabled", reason: "unmanaged", detail };
+}
 
 const PNPM_VERSIONED_OPENCLAW_ENTRY_PATTERN =
   /^(.*?)([\\/])node_modules\2\.pnpm\2openclaw@[^\\/]+\2node_modules\2openclaw\2.+$/;
@@ -45,54 +71,47 @@ function rewritePnpmVersionedOpenClawEntryPath(entryPath: string): string {
  *   custom supervisors keep tracking the same gateway PID
  */
 export function restartGatewayProcessWithFreshPid(
-  _opts: GatewayRespawnOptions = {},
+  opts: GatewayRespawnOptions = {},
 ): GatewayRespawnResult {
-  if (isTruthyEnvValue(process.env.OPENCLAW_NO_RESPAWN)) {
-    return { mode: "disabled" };
+  const decision = opts.decision ?? resolveGatewayRestartDecision();
+  if (decision.mode === "disabled") {
+    return decision.reason === "no-respawn"
+      ? { mode: "disabled" }
+      : { mode: "disabled", detail: decision.detail };
   }
-  const supervisor = detectGatewayRespawnSupervisor(process.env);
-  if (supervisor) {
-    if (supervisor === "launchd") {
-      const handoff = scheduleDetachedLaunchdRestartHandoff({
-        mode: "start-after-exit",
-        waitForPid: process.pid,
-      });
-      return handoff.ok
-        ? { mode: "supervised", handoffSpawned: handoff.value }
-        : { mode: "failed", detail: handoff.error };
-    }
-    if (supervisor === "schtasks") {
-      if (process.argv.some(isWindowsTaskSupervisorChildArgument)) {
-        const exitCode = readWindowsTaskSupervisorRestartExitCode(process.argv);
-        if (exitCode === undefined) {
-          return {
-            mode: "failed",
-            detail: "Windows task supervisor restart marker is missing or invalid",
-          };
-        }
-        return {
-          mode: "supervised",
-          exitCode,
-        };
-      }
-      const restart = triggerOpenClawRestart();
-      if (!restart.ok) {
+  const { supervisor } = decision;
+  if (supervisor === "launchd") {
+    const handoff = scheduleDetachedLaunchdRestartHandoff({
+      mode: "start-after-exit",
+      waitForPid: process.pid,
+    });
+    return handoff.ok
+      ? { mode: "supervised", handoffSpawned: handoff.value }
+      : { mode: "failed", detail: handoff.error };
+  }
+  if (supervisor === "schtasks") {
+    if (process.argv.some(isWindowsTaskSupervisorChildArgument)) {
+      const exitCode = readWindowsTaskSupervisorRestartExitCode(process.argv);
+      if (exitCode === undefined) {
         return {
           mode: "failed",
-          detail: restart.detail ?? `${restart.method} restart failed`,
+          detail: "Windows task supervisor restart marker is missing or invalid",
         };
       }
+      return {
+        mode: "supervised",
+        exitCode,
+      };
     }
-    return { mode: "supervised" };
+    const restart = triggerOpenClawRestart();
+    if (!restart.ok) {
+      return {
+        mode: "failed",
+        detail: restart.detail ?? `${restart.method} restart failed`,
+      };
+    }
   }
-  // Unmanaged Windows or containers cannot safely surrender their tracked process.
-  const detail =
-    process.platform === "win32"
-      ? "win32: detached respawn unsupported without Scheduled Task markers"
-      : isContainerEnvironment()
-        ? "container: use in-process restart to keep PID 1 alive"
-        : "unmanaged: use in-process restart to keep custom supervisor PID tracking stable";
-  return { mode: "disabled", detail };
+  return { mode: "supervised" };
 }
 
 /**
@@ -105,7 +124,8 @@ export function restartGatewayProcessWithFreshPid(
 export function respawnGatewayProcessForUpdate(
   opts: GatewayRespawnOptions = {},
 ): GatewayUpdateRespawnResult {
-  if (isTruthyEnvValue(process.env.OPENCLAW_NO_RESPAWN)) {
+  const decision = opts.decision ?? resolveGatewayRestartDecision();
+  if (decision.mode === "disabled" && decision.reason === "no-respawn") {
     return { mode: "disabled", detail: "OPENCLAW_NO_RESPAWN" };
   }
   try {

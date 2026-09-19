@@ -666,12 +666,22 @@ process.stdout.write(JSON.stringify({home: process.env.HOME, codexHome: process.
           });
           await readNodeResponse(frames, 9);
           const notifications = await readNodeProcessNotifications(frames, "node-proof", 3);
-          expect(notifications.map((message) => message.method)).toEqual([
-            "process/output",
-            "process/exited",
-            "process/closed",
+          // Codex observes exit and output independently; closed follows both in sequence.
+          expect(new Set(notifications.slice(0, -1).map((message) => message.method))).toEqual(
+            new Set(["process/exited", "process/output"]),
+          );
+          expect(notifications.at(-1)?.method).toBe("process/closed");
+          expect(notifications.map((message) => (message.params as { seq: number }).seq)).toEqual([
+            1, 2, 3,
           ]);
-          const output = notifications[0]?.params as { chunk: string; seq: number };
+          expect(
+            notifications.find((message) => message.method === "process/exited"),
+          ).toMatchObject({
+            params: { exitCode: 0, sandboxDenied: false },
+          });
+          const output = notifications.find((message) => message.method === "process/output")
+            ?.params as { chunk: string; stream: string };
+          expect(output.stream).toBe("stdout");
           const observed = JSON.parse(Buffer.from(output.chunk, "base64").toString("utf8")) as {
             input: string;
             ordinary: string;

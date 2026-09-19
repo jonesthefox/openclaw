@@ -882,7 +882,8 @@ describe("doctor lint state isolation", () => {
     const databasePath = resolveOpenClawStateSqlitePath(process.env);
     await closeOpenClawStateDatabaseByPathAsync(databasePath);
     const lock = new DatabaseSync(databasePath);
-    lock.exec("BEGIN IMMEDIATE");
+    // Initialize WAL artifacts before hashing; Windows rejects raw reads under a write lock.
+    lock.exec("BEGIN IMMEDIATE; ROLLBACK");
     const before = snapshotDoctorLintSqliteFamily(databasePath);
     mocks.resolveDoctorContributionHealthChecks.mockResolvedValue([
       {
@@ -903,6 +904,7 @@ describe("doctor lint state isolation", () => {
 
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
+      lock.exec("BEGIN IMMEDIATE");
       await expect(
         runDoctorLintCli(runtime, {
           json: true,
@@ -914,10 +916,13 @@ describe("doctor lint state isolation", () => {
         checksRun: 1,
         findings: [],
       });
+      lock.exec("ROLLBACK");
       expect(snapshotDoctorLintSqliteFamily(databasePath)).toEqual(before);
     } finally {
       stdout.mockRestore();
-      lock.exec("ROLLBACK");
+      if (lock.isTransaction) {
+        lock.exec("ROLLBACK");
+      }
       lock.close();
       await closeOpenClawStateDatabaseByPathAsync(databasePath);
       fs.rmSync(rootDir, { recursive: true, force: true });
