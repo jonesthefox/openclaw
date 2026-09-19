@@ -40,7 +40,16 @@ function managedImageSource(): string {
 }
 
 function managedImageResourceKey(source: string): string {
-  return `${source.replace(/\/full$/u, "/thumbnail")}::::`;
+  return JSON.stringify([
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    "",
+    source.replace(/\/full$/u, "/thumbnail"),
+    "",
+  ]);
 }
 
 function installManagedImageUrls(prefix = `managed-image-${crypto.randomUUID()}`) {
@@ -122,6 +131,46 @@ function createAvailabilityPane(source: string, authToken: string, policyKey?: s
 }
 
 describe("chat media resource lifecycle", () => {
+  it("discards late transcript images and reauthorizes them when the session or connection changes", async () => {
+    const artifactId = `transcript-image-${crypto.randomUUID()}`;
+    const { blobUrl } = installManagedImageUrls();
+    const oldImage = createDeferred<{ url: string } | null>();
+    const resolveArtifactDownload = vi
+      .fn()
+      .mockReturnValueOnce(oldImage.promise)
+      .mockResolvedValue({ url: "data:image/png;base64,cG5n" });
+    const fetchMock = vi.fn(async () => imageResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    const container = document.createElement("div");
+    const options = { sessionKey: "first-session", connectionEpoch: 1, resolveArtifactDownload };
+    const rerender = observeSubscriber(() =>
+      render(
+        renderMessageImages([{ artifactId }], { ...options, onRequestUpdate: rerender }),
+        container,
+      ),
+    );
+    rerender();
+    options.sessionKey = "second-session";
+    rerender();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(blobUrl);
+    oldImage.resolve({ url: "data:image/png;base64,b2xk" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(blobUrl);
+
+    options.connectionEpoch = 2;
+    rerender();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(resolveArtifactDownload.mock.calls.map(([params]) => params)).toEqual([
+      { sessionKey: "first-session", artifactId },
+      { sessionKey: "second-session", artifactId },
+      { sessionKey: "second-session", artifactId },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    render(null, container);
+  });
+
   it("scopes image approval to its session and renews the approved ticket", async () => {
     const source = "/outside/project/preview.png";
     const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
