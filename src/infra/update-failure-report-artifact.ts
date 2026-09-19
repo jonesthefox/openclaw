@@ -4,15 +4,59 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { writeTriageUpdateFailure } from "../commands/triage-update.js";
+import {
+  sanitizeTriageUpdateFailure,
+  type TriageUpdateFailure,
+} from "../commands/triage-update.js";
 import { resolveStateDir } from "../config/paths.js";
 import { redactSupportString } from "../logging/diagnostic-support-redaction.js";
 import { classifyUpdateOutcome } from "../shared/update-outcome.js";
+import { formatErrorMessage } from "./errors.js";
 import { writeTextAtomic } from "./json-files.js";
 import { formatUpdateDoctorLintFinding } from "./update-doctor-lint.js";
 import type { PreparedUpdateFailureReport } from "./update-failure-report-prepare.js";
 import type { UpdateRunReport } from "./update-run-report.js";
 import type { UpdateRunResult } from "./update-runner-types.js";
+
+/** Complete sanitized inventories are named artifacts, never restored-runtime input. */
+async function writeUpdateFailureLintArtifact(
+  inventory: TriageUpdateFailure,
+  directory: string,
+): Promise<string> {
+  const outputPath = path.join(directory, `openclaw-update-lint-${randomUUID()}.json`);
+  await writeTextAtomic(outputPath, `${JSON.stringify(inventory)}\n`, {
+    mode: 0o600,
+    dirMode: 0o700,
+  });
+  return outputPath;
+}
+
+export async function writeTriageUpdateFailure(
+  failure: TriageUpdateFailure,
+  options: { env?: NodeJS.ProcessEnv; outputPath?: string } = {},
+): Promise<string> {
+  const env = options.env ?? process.env;
+  const stateDir = resolveStateDir(env);
+  const outputPath =
+    options.outputPath ??
+    path.join(stateDir, "logs", "support", `openclaw-update-failure-${randomUUID()}.json`);
+  const inventory = sanitizeTriageUpdateFailure(failure, { env, stateDir }, "inventory");
+  if ("result" in inventory && inventory.result.steps.some((step) => step.doctorLintFindings)) {
+    const detail = await writeUpdateFailureLintArtifact(inventory, path.dirname(outputPath)).then(
+      (inventoryPath) => `Complete Doctor lint inventory: ${inventoryPath}`,
+      (error: unknown) =>
+        `Complete Doctor lint inventory unavailable: ${formatErrorMessage(error)}`,
+    );
+    // The released reader strips new fields and successful steps. Its error text retains
+    // this diagnostic link even after a later plugin failure or another CLI handoff.
+    inventory.error = `${inventory.error ?? inventory.result.reason ?? "Update failed"}. ${detail}`;
+  }
+  const sanitized = sanitizeTriageUpdateFailure(inventory, { env, stateDir }, "artifact");
+  const body = `${JSON.stringify(sanitized)}\n`;
+  // The managed helper's private handoff keeps the latest complete outcome after cleanup.
+  await writeTextAtomic(outputPath, body, { mode: 0o600, dirMode: 0o700 });
+  return outputPath;
+}
 
 /** Terminal exports never write into state retained by an unresolved recovery owner. */
 export async function writeUpdateRunReportArtifact(params: {
@@ -43,7 +87,7 @@ export async function writeUpdateRunReportArtifact(params: {
     params.report.markdown,
     `\n## Complete Doctor lint findings (${findings.length})\n`,
     ...findings.map((finding) => `- ${formatUpdateDoctorLintFinding(finding, env)}`),
-    failurePath ? `\nComplete diagnostic JSON: ${path.relative(directory, failurePath)}` : "",
+    failurePath ? `\nBounded diagnostic JSON: ${path.relative(directory, failurePath)}` : "",
   ].join("\n");
   await writeTextAtomic(
     outputPath,

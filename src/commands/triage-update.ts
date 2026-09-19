@@ -1,18 +1,15 @@
 // Preserve one failed update as bounded diagnostics across the updater's fresh CLI handoff.
-import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import path from "node:path";
 import { z } from "zod";
 import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
-import { resolveStateDir } from "../config/paths.js";
 import { readFileDescriptorBounded } from "../infra/boundary-file-read.js";
-import { writeTextAtomic } from "../infra/json-files.js";
 import {
   normalizeUpdateDoctorLintFindings,
   UpdateDoctorLintFindingSchema,
 } from "../infra/update-doctor-lint.js";
 import { normalizeUpdateFailureFacts } from "../infra/update-failure-facts.js";
 import { UpdateFailureFactSchema } from "../infra/update-run-schema.js";
+import { formatUpdateDoctorLintReceipt } from "../infra/update-run-step.js";
 import {
   redactSupportString,
   type SupportRedactionContext,
@@ -20,7 +17,7 @@ import {
 import { classifyUpdateOutcome } from "../shared/update-outcome.js";
 import { truncateUtf8Prefix, truncateUtf8Suffix } from "../utils/utf8-truncate.js";
 
-const UPDATE_FAILURE_MAX_BYTES = 4 * 1024 * 1024;
+const UPDATE_FAILURE_MAX_BYTES = 8 * 1024;
 const UPDATE_FAILURE_PROMPT_MAX_BYTES = 4 * 1024;
 const updateIdentitySchema = z.object({
   sha: z.string().nullish(),
@@ -143,7 +140,7 @@ export type TriageUpdateFailure = z.infer<typeof updateFailureArtifactSchema>;
 export function sanitizeTriageUpdateFailure(
   input: unknown,
   redaction: SupportRedactionContext,
-  format: "prompt" | "artifact" = "prompt",
+  format: "prompt" | "artifact" | "inventory" = "prompt",
 ): TriageUpdateFailure {
   const parsed = updateFailureArtifactSchema.safeParse(input);
   if (!parsed.success) {
@@ -188,7 +185,7 @@ export function sanitizeTriageUpdateFailure(
       budget = Math.floor((budget * (maxBytes - 5)) / (bytes - 5));
     }
   }
-  const error = text(failure.error, 768, "ends");
+  let error = text(failure.error, 768, "ends");
   if (!("result" in failure)) {
     if (!error) {
       throw new Error("Update failure diagnostics contain no readable error.");
@@ -196,8 +193,30 @@ export function sanitizeTriageUpdateFailure(
     return { error, ...(failure.omittedDetails ? { omittedDetails: failure.omittedDetails } : {}) };
   }
   const result = failure.result;
+  const lintReceipt = (step: (typeof result.steps)[number]) =>
+    formatUpdateDoctorLintReceipt(
+      {
+        ...step,
+        signal: step.signal === null ? null : text(step.signal, 32),
+        doctorLintFindings: step.doctorLintFindings
+          ? normalizeUpdateDoctorLintFindings(step.doctorLintFindings, redaction.env)
+          : undefined,
+      },
+      384,
+    );
+  if (format === "artifact") {
+    const lint =
+      result.steps.findLast(
+        (step) => step.doctorLintFindings && step.exitCode !== 0 && !step.advisory,
+      ) ?? result.steps.findLast((step) => step.doctorLintFindings);
+    if (lint) {
+      // Released 9.4 keeps only 160-byte step tails, but preserves this 768-byte field.
+      const receipt = ` Doctor lint receipt: ${lintReceipt(lint)}`;
+      error = `${text(error ?? result.reason ?? "Update failed", 768 - Buffer.byteLength(JSON.stringify(receipt)), "ends")}${receipt}`;
+    }
+  }
   const preserveFindings =
-    format === "artifact" && result.steps.some((step) => step.doctorLintFindings !== undefined);
+    format !== "prompt" && result.steps.some((step) => step.doctorLintFindings !== undefined);
   const identity = (value: typeof result.before) =>
     value ? { sha: text(value.sha, 48), version: text(value.version, 48) } : undefined;
   let omittedDetails = failure.omittedDetails ?? 0;
@@ -325,19 +344,22 @@ export function sanitizeTriageUpdateFailure(
         exitCode: step.exitCode,
         termination: step.termination,
         signal:
-          format === "artifact" ? (step.signal === null ? null : text(step.signal, 32)) : undefined,
-        killed: format === "artifact" ? step.killed : undefined,
-        outputLimitExceeded: format === "artifact" ? step.outputLimitExceeded : undefined,
+          format !== "prompt" ? (step.signal === null ? null : text(step.signal, 32)) : undefined,
+        killed: format !== "prompt" ? step.killed : undefined,
+        outputLimitExceeded: format !== "prompt" ? step.outputLimitExceeded : undefined,
         // Failed-step stderr leads with the triggering error: keep both ends. The 384-byte cap's
         // tail half is wider than the previous tail-only window, so previously visible excerpts
         // remain visible; stdout keeps its tail-only outcome excerpt.
-        stderrTail: text(step.stderrTail, 384, "ends"),
+        stderrTail:
+          format === "artifact" && step.doctorLintFindings
+            ? lintReceipt(step)
+            : text(step.stderrTail, 384, "ends"),
         stdoutTail: text(step.stdoutTail, 160, "tail"),
         failureFacts: step.failureFacts?.length
           ? normalizeUpdateFailureFacts(step.failureFacts, redaction.env)
           : undefined,
         doctorLintFindings:
-          preserveFindings && step.doctorLintFindings
+          format === "inventory" && step.doctorLintFindings
             ? normalizeUpdateDoctorLintFindings(step.doctorLintFindings, redaction.env)
             : undefined,
         advisory:
@@ -350,10 +372,12 @@ export function sanitizeTriageUpdateFailure(
   };
   // Fit whole records, retaining the latest failed step and at least one plugin cause.
   // Field caps reserve room for these plus identity and restart safety even after JSON escaping.
-  if (preserveFindings) {
+  if (format === "inventory" && preserveFindings) {
     return sanitized;
   }
-  while (Buffer.byteLength(JSON.stringify(sanitized)) > UPDATE_FAILURE_PROMPT_MAX_BYTES) {
+  const maxBytes =
+    format === "artifact" ? UPDATE_FAILURE_MAX_BYTES - 1 : UPDATE_FAILURE_PROMPT_MAX_BYTES;
+  while (Buffer.byteLength(JSON.stringify(sanitized)) > maxBytes) {
     if (sanitized.result.steps.length > 1) {
       sanitized.result.steps.shift();
     } else if (removePluginDetails.length > 1) {
@@ -361,27 +385,11 @@ export function sanitizeTriageUpdateFailure(
     } else if ((sanitized.result.steps[0]?.failureFacts?.length ?? 0) > 1) {
       sanitized.result.steps[0]?.failureFacts?.pop();
     } else {
-      throw new Error("Update failure diagnostics exceed the 4 KiB prompt limit.");
+      throw new Error(`Update failure diagnostics exceed the ${maxBytes}-byte limit.`);
     }
     sanitized.omittedDetails += 1;
   }
   return sanitized;
-}
-
-export async function writeTriageUpdateFailure(
-  failure: TriageUpdateFailure,
-  options: { env?: NodeJS.ProcessEnv; outputPath?: string } = {},
-): Promise<string> {
-  const env = options.env ?? process.env;
-  const stateDir = resolveStateDir(env);
-  const sanitized = sanitizeTriageUpdateFailure(failure, { env, stateDir }, "artifact");
-  const body = `${JSON.stringify(sanitized)}\n`;
-  const outputPath =
-    options.outputPath ??
-    path.join(stateDir, "logs", "support", `openclaw-update-failure-${randomUUID()}.json`);
-  // The managed helper's private handoff keeps the latest complete outcome after cleanup.
-  await writeTextAtomic(outputPath, body, { mode: 0o600, dirMode: 0o700 });
-  return outputPath;
 }
 
 export async function readTriageUpdateFailure(

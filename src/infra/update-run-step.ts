@@ -51,36 +51,6 @@ export function updateRunStepsFromResultStep(step: ResultStep): UpdateRunStep[] 
     : step.advisory
       ? [step.advisory.message]
       : [];
-  const errors: Array<{ checkId: string; message: string }> = [];
-  const lint = {
-    exitCode: step.exitCode,
-    termination: step.termination,
-    signal: step.signal,
-    killed: step.killed,
-    outputLimitExceeded: step.outputLimitExceeded,
-    counts: { error: 0, warning: 0, info: 0 },
-    errors,
-    omitted: 0,
-  };
-  for (const finding of step.doctorLintFindings ?? []) {
-    const severity =
-      finding.severity === "warning" || finding.severity === "info" ? finding.severity : "error";
-    lint.counts[severity]++;
-    if (severity === "error") {
-      lint.errors.push({
-        checkId: truncateUtf16Safe(finding.checkId, 128),
-        message: truncateUtf16Safe(
-          [finding.requirement, finding.message].filter(Boolean).join(": "),
-          200,
-        ),
-      });
-    }
-  }
-  const utf8 = new TextEncoder();
-  while (utf8.encode(JSON.stringify(lint)).length > UPDATE_RUN_TEXT_LIMIT && lint.errors.length) {
-    lint.errors.pop();
-    lint.omitted++;
-  }
   return [
     {
       step: text(step.name),
@@ -100,7 +70,7 @@ export function updateRunStepsFromResultStep(step: ResultStep): UpdateRunStep[] 
           {
             step: text(`finalize:doctor-lint:${step.name}`),
             status: "completed" as const,
-            detail: JSON.stringify(lint),
+            detail: formatUpdateDoctorLintReceipt(step),
           },
         ]
       : []),
@@ -130,4 +100,48 @@ export function updateRunWarningMessages(steps: readonly UpdateRunStep[]): strin
       ? [step.detail]
       : [],
   );
+}
+
+/** Shared bounded receipt for history and rollback-readable diagnostics. */
+export function formatUpdateDoctorLintReceipt(
+  step: Pick<
+    UpdateStepResult,
+    "exitCode" | "termination" | "killed" | "outputLimitExceeded" | "doctorLintFindings"
+  > & { signal?: string | null },
+  maxBytes = UPDATE_RUN_TEXT_LIMIT,
+): string {
+  const errors: Array<{ checkId: string; message: string }> = [];
+  const lint = {
+    exitCode: step.exitCode,
+    termination: step.termination,
+    signal: step.signal,
+    killed: step.killed,
+    outputLimitExceeded: step.outputLimitExceeded,
+    counts: { error: 0, warning: 0, info: 0 },
+    errors,
+    omitted: 0,
+  };
+  for (const finding of step.doctorLintFindings ?? []) {
+    const severity =
+      finding.severity === "warning" || finding.severity === "info" ? finding.severity : "error";
+    lint.counts[severity]++;
+    if (severity === "error") {
+      lint.errors.push({
+        checkId: truncateUtf16Safe(finding.checkId, 128),
+        message: truncateUtf16Safe(
+          [finding.requirement, finding.message].filter(Boolean).join(": "),
+          200,
+        ),
+      });
+    }
+  }
+  const utf8 = new TextEncoder();
+  while (
+    utf8.encode(JSON.stringify(JSON.stringify(lint))).length > maxBytes &&
+    lint.errors.length
+  ) {
+    lint.errors.pop();
+    lint.omitted++;
+  }
+  return JSON.stringify(lint);
 }

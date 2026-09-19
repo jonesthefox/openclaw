@@ -498,19 +498,26 @@ it.each(["ok", "error"] as const)(
     };
     const run = { runId: createUpdateRun({ trigger: "cli" }, { env }).runId, env };
     const reportPath = path.join(env.OPENCLAW_STATE_DIR, "update-reports", `${run.runId}.md`);
-    let savedAtPublication: { markdown: string; failure?: string } | undefined;
+    let savedAtPublication: { markdown: string; failure?: string; inventory?: string } | undefined;
     const log = vi.spyOn(defaultRuntime, "log").mockImplementation((value) => {
       if (String(value) === `Report: ${reportPath}`) {
         const markdown = fs.readFileSync(reportPath, "utf8");
         let failure: string | undefined;
+        let inventory: string | undefined;
         if (status === "error") {
-          const diagnosticLink = /^Complete diagnostic JSON: ([^\r\n]+)$/mu.exec(markdown)?.[1];
+          const diagnosticLink = /^Bounded diagnostic JSON: ([^\r\n]+)$/mu.exec(markdown)?.[1];
           if (!diagnosticLink) {
             throw new Error("Published failure report is missing its diagnostic JSON link.");
           }
           failure = fs.readFileSync(path.resolve(path.dirname(reportPath), diagnosticLink), "utf8");
+          expect(Buffer.byteLength(failure)).toBeLessThanOrEqual(8 * 1024);
+          const inventoryPath = JSON.parse(failure)
+            .error.split("Complete Doctor lint inventory: ")[1]
+            .split(" Doctor lint receipt: ")[0]
+            .replace("$OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
+          inventory = fs.readFileSync(inventoryPath, "utf8");
         }
-        savedAtPublication = { markdown, ...(failure ? { failure } : {}) };
+        savedAtPublication = { markdown, ...(failure ? { failure, inventory } : {}) };
       }
     });
     const doctorLintFindings: UpdateDoctorLintFinding[] = Array.from(
@@ -546,7 +553,7 @@ it.each(["ok", "error"] as const)(
     for (const finding of doctorLintFindings) {
       expect(savedAtPublication?.markdown).toContain(finding.checkId);
       if (status === "error") {
-        expect(savedAtPublication?.failure).toContain(finding.checkId);
+        expect(savedAtPublication?.inventory).toContain(finding.checkId);
       }
     }
     expect(JSON.stringify(savedAtPublication)).not.toContain(secret);
