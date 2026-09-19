@@ -301,6 +301,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/embedded-agent-runner/run/model-setup.ownership.test.ts",
   "src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts",
   "src/agents/embedded-agent-runner/run/runtime-preparation.thinking.test.ts",
+  "src/agents/embedded-agent-runner/run/run-attempt-dispatch.owner.test.ts",
   "src/agents/tools-effective-inventory.cold-provider.test.ts",
   "src/tts/tts-summary.static-catalog.test.ts",
   "src/agents/prepared-model-runtime.run-resources.test.ts",
