@@ -2,10 +2,17 @@ import os from "node:os";
 import { vi } from "vitest";
 import { GATEWAY_SERVICE_SELECTOR_ENV_KEYS } from "../../daemon/constants.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service.js";
+import { recordUpdateRunVerification } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { captureEnv } from "../../test-utils/env.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
 import { finishUpdate } from "./update-command-post-update.js";
+import { verifyUpdatedGateway } from "./update-command-verification.js";
+
+vi.mock("./update-command-verification.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-command-verification.js")>()),
+  verifyUpdatedGateway: vi.fn(async () => ({ ok: false, score: 0, summary: "stopped-free" })),
+}));
 
 export function createManagedServiceIdentityFixture(home: string) {
   const keys = [
@@ -33,6 +40,28 @@ export function createManagedServiceIdentityFixture(home: string) {
 }
 
 type FinishUpdateParams = Parameters<typeof finishUpdate>[0];
+
+export function recordVerifiedGatewayRun(
+  run: NonNullable<FinishUpdateParams["opts"]["run"]>,
+): NonNullable<UpdateRunResult["verification"]> {
+  const facts = {
+    serviceRunning: true,
+    versionMatch: true,
+    settled: true,
+    readyz: true,
+    channelsReady: true,
+    pluginErrors: [],
+  };
+  recordUpdateRunVerification(run.runId, facts, { env: run.env });
+  return facts;
+}
+
+export function mockVerifiedGatewayRun(run: NonNullable<FinishUpdateParams["opts"]["run"]>): void {
+  vi.mocked(verifyUpdatedGateway).mockImplementationOnce(async ({ result, expectedVersion }) => {
+    result.verification = { ...recordVerifiedGatewayRun(run), runningVersion: expectedVersion };
+    return { ok: true, score: 7, summary: "Restored Gateway is healthy." };
+  });
+}
 
 export const validConfigSnapshot = {
   valid: true,

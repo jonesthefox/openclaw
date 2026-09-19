@@ -86,6 +86,35 @@ export function formatUpdateRunCurrentHealth(health: UpdateRunReportHealth): str
     : "Current health unavailable; saved verification describes the update attempt only.";
 }
 
+/** Public-report callers redact identifiers before using this shared formatter. */
+export function formatObservedUpdateRecovery(
+  recovery: UpdateRunRecord["verification"]["recovery"],
+  observation: Pick<UpdateRunRecord["steps"][number], "failureFacts" | "exitCode"> | undefined,
+  verification?: UpdateRunRecord["verification"],
+): string | undefined {
+  if (!observation) {
+    return undefined;
+  }
+  const version =
+    recovery?.serviceRestartSafe && recovery.service === "healthy"
+      ? recovery.version
+      : verification?.versionMatch && verification.readyz && verification.settled
+        ? verification.runningVersion
+        : undefined;
+  if (observation.exitCode === 0 && version && !observation.failureFacts?.length) {
+    const constraint =
+      recovery?.serviceRestartSafe === false ? `; restart remains unsafe (${recovery.reason})` : "";
+    return `${recovery?.packageRollbackVerified ? "package rollback verified; " : ""}verified serving ${bounded(version, 120)}${constraint}`;
+  }
+  const code = observation.failureFacts?.[0]?.code;
+  if (!code) {
+    return "Gateway readiness is pending; recovery probe completed without verified readiness";
+  }
+  return code === "gateway-probe-failed"
+    ? `recovery probe failed (${code})`
+    : `not serving (${code})`;
+}
+
 /** The four conversation milestones share the run's recorded versions and final report. */
 export function renderUpdateRunNotice(
   run: UpdateRunRecord,
@@ -267,6 +296,14 @@ export function renderUpdateRunReport(
   }
   const verification: string[] = [];
   const facts = run.verification;
+  const recovery = formatObservedUpdateRecovery(
+    facts.recovery,
+    run.steps.findLast((step) => step.step === "gateway recovery verification"),
+    facts,
+  );
+  if (recovery) {
+    lines.push(`Recovery: ${recovery}.`);
+  }
   if (facts.booted) {
     verification.push("gateway booted");
   }
@@ -369,7 +406,11 @@ export function updateRunReportInputFromResult(result: UpdateRunResult): ReportI
     origin: {},
     before: result.before ?? {},
     after: result.after ?? {},
-    verification: {},
+    verification: {
+      ...result.verification,
+      recovery: result.recovery,
+      rollbackOutcome: result.rollbackOutcome,
+    },
     repair: [],
     downtimeMs: null,
     steps: result.steps.flatMap(updateRunStepsFromResultStep),

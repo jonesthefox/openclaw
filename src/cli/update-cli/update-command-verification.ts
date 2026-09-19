@@ -57,28 +57,39 @@ export function recordUpdateGatewayHealth(
   if (!run) {
     return;
   }
-  recordUpdateRunVerification(
-    run.runId,
-    {
-      serviceRunning: health.runtime.status === "running",
-      ...(typeof health.runtime.pid === "number" ? { pid: health.runtime.pid } : {}),
-      port,
-      runningVersion: health.gatewayVersion ?? undefined,
-      runningBuildId: health.gatewayBuildId ?? undefined,
-      versionMatch:
-        health.expectedVersion && health.gatewayVersion != null
-          ? health.gatewayVersion === health.expectedVersion && !health.buildIdMismatch
+  recordUpdateRunVerification(run.runId, updateGatewayHealthFacts(health, port, readyz), {
+    env: run.env,
+  });
+}
+
+function updateGatewayHealthFacts(
+  health: GatewayRestartSnapshot,
+  port: number,
+  readyz: boolean,
+): NonNullable<UpdateRunResult["verification"]> {
+  return {
+    serviceRunning:
+      health.runtime.status === "running"
+        ? true
+        : health.runtime.status === "stopped"
+          ? false
           : undefined,
-      pluginErrors: [
-        ...(health.activatedPluginErrors?.map((error) => JSON.stringify(error)) ?? []),
-        ...(health.unavailablePlugins?.map((error) => JSON.stringify(error)) ?? []),
-      ],
-      channelsReady: health.healthy && !health.channelProbeErrors?.length,
-      settled: health.healthy,
-      readyz,
-    },
-    { env: run.env },
-  );
+    ...(typeof health.runtime.pid === "number" ? { pid: health.runtime.pid } : {}),
+    port,
+    runningVersion: health.gatewayVersion ?? undefined,
+    runningBuildId: health.gatewayBuildId ?? undefined,
+    versionMatch:
+      health.expectedVersion && health.gatewayVersion != null
+        ? health.gatewayVersion === health.expectedVersion && !health.buildIdMismatch
+        : undefined,
+    pluginErrors: [
+      ...(health.activatedPluginErrors?.map((error) => JSON.stringify(error)) ?? []),
+      ...(health.unavailablePlugins?.map((error) => JSON.stringify(error)) ?? []),
+    ],
+    channelsReady: health.healthy && !health.channelProbeErrors?.length,
+    settled: health.healthy,
+    readyz,
+  };
 }
 
 /** Verify core activation while preserving plugin failures as separate notices. */
@@ -88,6 +99,7 @@ export async function verifyUpdatedGateway(
     opts: UpdateCommandOptions;
     nodeRunner?: string;
     onVerified?: (verifiedAtMs: number) => void;
+    purpose?: "recovery";
   },
 ): Promise<UpdateRepairValidation & { pluginWarnings?: PluginUpdateWarning[] }> {
   const startedAtMs = Date.now();
@@ -102,6 +114,12 @@ export async function verifyUpdatedGateway(
     );
   }
   const serviceRunning = !params.requireRunningService || health.runtime.status === "running";
+  assertCurrent();
+  if (params.purpose === "recovery") {
+    params.result.verification = updateGatewayHealthFacts(health, params.gatewayPort, readyz);
+  } else {
+    recordUpdateGatewayHealth(proofOptions.run, health, params.gatewayPort, readyz);
+  }
   const recordVerificationStep = (
     failureFacts?: UpdateFailureFact[],
     detail?: string,
@@ -109,13 +127,16 @@ export async function verifyUpdatedGateway(
   ) => {
     const endedAtMs = Date.now();
     const step: UpdateStepResult = {
-      name: params.result.recovery?.packageRollbackVerified
-        ? "rollback gateway verification"
-        : "gateway verification",
+      name:
+        params.purpose === "recovery"
+          ? "gateway recovery verification"
+          : params.result.recovery?.packageRollbackVerified
+            ? "rollback gateway verification"
+            : "gateway verification",
       command: "gateway verification",
       cwd: params.result.root ?? process.cwd(),
       durationMs: endedAtMs - startedAtMs,
-      exitCode: failureFacts ? 1 : 0,
+      exitCode: failureFacts ? 1 : warning && params.purpose === "recovery" ? null : 0,
       ...(failureFacts ? { failureFacts } : {}),
       ...(warning
         ? {
@@ -131,13 +152,15 @@ export async function verifyUpdatedGateway(
     } else {
       params.result.steps[index] = step;
     }
-    if (proofOptions.run) {
+    const run = proofOptions.run;
+    if (run && params.purpose !== "recovery") {
       for (const row of updateRunStepsFromResultStep(step)) {
         // A recheck must clear failure facts from the previous observation.
+        assertCurrent();
         recordUpdateRunStep(
-          proofOptions.run.runId,
+          run.runId,
           { failureFacts: undefined, ...row, endedAtMs, detail: row.detail ?? detail },
-          { env: proofOptions.run.env },
+          { env: run.env },
         );
       }
     }
@@ -155,13 +178,18 @@ export async function verifyUpdatedGateway(
     );
     assertCurrent();
     const verifiedAtMs = Date.now();
-    recordUpdateGatewayHealth(proofOptions.run, health, params.gatewayPort, readyz);
     params.onVerified?.(verifiedAtMs);
     assertCurrent();
     recordVerificationStep();
 
     if (!params.opts.json) {
-      defaultRuntime.log(theme.success("Gateway: restarted and verified."));
+      defaultRuntime.log(
+        theme.success(
+          params.purpose === "recovery"
+            ? "Gateway: verified serving after update failure."
+            : "Gateway: restarted and verified.",
+        ),
+      );
       for (const warning of pluginWarnings) {
         defaultRuntime.log(theme.warn(warning.message));
       }
@@ -176,7 +204,6 @@ export async function verifyUpdatedGateway(
       ...(pluginWarnings.length > 0 ? { pluginWarnings } : {}),
     };
   }
-  recordUpdateGatewayHealth(proofOptions.run, health, params.gatewayPort, readyz);
   if (gatewayReadinessPending(health)) {
     const detail = [
       "Gateway readiness is pending; leaving the observed running process starting without another recovery restart or rollback.",
@@ -196,7 +223,9 @@ export async function verifyUpdatedGateway(
   }
   const httpFailed = http !== undefined && !readyz;
   const diagnosticLines: [string, ...string[]] = [
-    "Gateway did not become healthy after restart.",
+    params.purpose === "recovery"
+      ? "Gateway recovery probe did not verify serving health."
+      : "Gateway did not become healthy after restart.",
     ...(httpFailed ? ["Gateway /readyz did not return HTTP 200."] : []),
     ...(health.healthy && params.requireRunningService
       ? ["Gateway responded, but the managed service did not report running after restart."]

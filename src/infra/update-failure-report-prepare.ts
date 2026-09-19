@@ -21,7 +21,10 @@ import {
   selectUpdateFailureReportSteps,
 } from "./update-failure-facts-format.js";
 import { normalizeUpdateFailureFacts } from "./update-failure-facts.js";
-import { projectPublicUpdateFailureIdentifiers } from "./update-failure-public-identifiers.js";
+import {
+  isPublicUpdateFailureCode,
+  projectPublicUpdateFailureIdentifiers,
+} from "./update-failure-public-identifiers.js";
 import { updatePreflightDetailMessage } from "./update-preflight-details.js";
 import {
   LEGACY_UPDATE_RUN_ADVISORY,
@@ -29,7 +32,11 @@ import {
 } from "./update-run-legacy-expiry.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
 import { readUpdateRunReportHealth } from "./update-run-report-health.js";
-import { formatUpdateRunCurrentHealth, formatUpdateRunIdentity } from "./update-run-report.js";
+import {
+  formatObservedUpdateRecovery,
+  formatUpdateRunCurrentHealth,
+  formatUpdateRunIdentity,
+} from "./update-run-report.js";
 import type { UpdateRunResult, UpdateStepResult } from "./update-runner.js";
 
 const UPDATE_REPORT_BODY_MAX_BYTES = 16_000;
@@ -127,6 +134,7 @@ const REPORTABLE_RECORDED_PHASES = new Set<string>([
   "global install verify",
   "global install swap",
   "npm lifecycle policy preflight",
+  "gateway recovery verification",
 ]);
 type ReportedFailedStep = Pick<
   UpdateStepResult,
@@ -209,6 +217,31 @@ function resolveRecoveryOutcome(
     ...input.result,
     recovery: input.result.recovery ?? input.recordedRun?.verification?.recovery,
   };
+  const observation =
+    result.steps.findLast((step) => step.name === "gateway recovery verification") ??
+    input.recordedRun?.steps.findLast((step) => step.step === "gateway recovery verification");
+  const verification = input.result.verification ?? input.recordedRun?.verification;
+  const observed = formatObservedUpdateRecovery(
+    result.recovery?.serviceRestartSafe
+      ? { ...result.recovery, version: redactPublicSupportVersion(result.recovery.version) }
+      : result.recovery,
+    observation && {
+      exitCode: observation.exitCode,
+      failureFacts: observation.failureFacts?.map((fact) => ({
+        check: fact.check,
+        code: isPublicUpdateFailureCode(fact.code) ? fact.code : "gateway-probe-failed",
+      })),
+    },
+    verification && {
+      ...verification,
+      runningVersion: verification.runningVersion
+        ? redactPublicSupportVersion(verification.runningVersion)
+        : undefined,
+    },
+  );
+  if (observed) {
+    return observed;
+  }
   if (result.recovery?.serviceRestartSafe === true) {
     const version = redactPublicSupportVersion(result.recovery.version);
     const restored = result.recovery.packageRollbackVerified === true;
@@ -350,7 +383,7 @@ export async function prepareUpdateFailureReport(
   const rollback = input.result.rollbackOutcome ?? recordedRun?.verification?.rollbackOutcome;
   const action = recordedRun?.trigger ?? input.action;
   const installation = recordedRun?.target?.installationMethod;
-  const verification = recordedRun?.verification;
+  const verification = input.result.verification ?? recordedRun?.verification;
   const identity = verification
     ? formatUpdateRunIdentity(verification, recordedRun?.after ?? input.result.after ?? {})
     : undefined;

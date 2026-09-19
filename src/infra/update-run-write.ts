@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { runExistingOpenClawStateWriteTransaction } from "../state/openclaw-state-db-existing-write.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../state/openclaw-state-schema.js";
@@ -11,8 +12,15 @@ import {
   type UpdateRunLedgerOptions,
 } from "./update-run-codec.js";
 import { readUpdateRunRecord } from "./update-run-reader.js";
-import type { UpdateRunRecord, UpdateRunStep } from "./update-run-record.js";
+import {
+  finishUpdateRunRecord,
+  type FinishUpdateRunResult,
+  type UpdateRunRecord,
+  type UpdateRunStep,
+} from "./update-run-record.js";
+import { updateRunStepsFromResultStep } from "./update-run-step.js";
 import { recordUpdateRunVerificationRecord } from "./update-run-verification.js";
+import type { UpdateRunResult } from "./update-runner-types.js";
 
 const schemaStart = OPENCLAW_STATE_SCHEMA_SQL.indexOf("CREATE TABLE IF NOT EXISTS update_runs (");
 const schemaEndMarker = "ON update_runs(status, created_at_ms DESC, run_id);";
@@ -97,45 +105,131 @@ export function mutateRun(
 type RecoveryDiagnostics = Pick<UpdateRunRecord["verification"], "recovery" | "rollbackOutcome">;
 type UpdateRunDiagnostics = RecoveryDiagnostics & {
   failure?: Pick<UpdateRunStep, "step" | "detail" | "failureFacts">;
+  observation?: {
+    verification: Omit<UpdateRunRecord["verification"], "recovery" | "rollbackOutcome">;
+    steps: UpdateRunStep[];
+  };
 };
+
+type UpdateRunDiagnosticsInput =
+  | UpdateRunDiagnostics
+  | ((recorded: Readonly<RecoveryDiagnostics>) => UpdateRunDiagnostics);
+
+function applyUpdateRunDiagnostics(
+  record: UpdateRunRecord,
+  diagnostics: UpdateRunDiagnosticsInput,
+): void {
+  const { failure, rollbackOutcome, observation, ...rest } =
+    typeof diagnostics === "function" ? diagnostics(record.verification) : diagnostics;
+  let { recovery } = rest;
+  if (failure && record.status === "running") {
+    upsertStep(record, { ...failure, status: "failed" });
+  }
+  const lifecycle = observation
+    ? {
+        recovery: record.verification.recovery,
+        rollbackOutcome: record.verification.rollbackOutcome,
+        booted: record.verification.booted,
+        noticeDelivered: record.verification.noticeDelivered,
+        doctorHint: record.verification.doctorHint,
+      }
+    : {};
+  if (observation) {
+    if (
+      record.verification.recovery?.serviceRestartSafe === false &&
+      record.verification.recovery.reason !== "runtime-verification-failed"
+    ) {
+      recovery = record.verification.recovery;
+    }
+    // One probe replaces its facts and proof together, even for a terminal run.
+    record.confirmedAtMs = null;
+    record.verification = lifecycle;
+    for (const step of observation.steps) {
+      upsertStep(record, { failureFacts: undefined, detail: undefined, ...step });
+    }
+  }
+  if (recovery || rollbackOutcome || observation) {
+    recordUpdateRunVerificationRecord(record, {
+      ...observation?.verification,
+      ...lifecycle,
+      ...(recovery ? { recovery } : {}),
+      ...(rollbackOutcome ? { rollbackOutcome } : {}),
+    });
+  }
+}
 
 /** Diagnostic capture cannot interrupt lifecycle work or replace its original outcome. */
 export function recordUpdateRunDiagnostics(
   runId: string,
-  diagnostics:
-    | UpdateRunDiagnostics
-    | ((recorded: Readonly<RecoveryDiagnostics>) => UpdateRunDiagnostics),
+  diagnostics: UpdateRunDiagnosticsInput,
   warn: (message: string) => void,
   options: UpdateRunLedgerOptions = {},
 ): void {
   try {
     if (
       typeof diagnostics !== "function" &&
-      !(diagnostics.failure || diagnostics.recovery || diagnostics.rollbackOutcome)
+      !(
+        diagnostics.failure ||
+        diagnostics.recovery ||
+        diagnostics.rollbackOutcome ||
+        diagnostics.observation
+      )
     ) {
       return;
     }
     mutateRun(
       runId,
       (record) => {
-        const { failure, recovery, rollbackOutcome } =
-          typeof diagnostics === "function" ? diagnostics(record.verification) : diagnostics;
-        if (failure && record.status === "running") {
-          upsertStep(record, { ...failure, status: "failed" });
-        }
-        if (recovery || rollbackOutcome) {
-          recordUpdateRunVerificationRecord(record, {
-            ...(recovery ? { recovery } : {}),
-            ...(rollbackOutcome ? { rollbackOutcome } : {}),
-          });
-        }
+        applyUpdateRunDiagnostics(record, diagnostics);
       },
       options,
     );
   } catch (error) {
+    if (hasCommandProcessCleanupError(error)) {
+      throw error;
+    }
     const fact = createUpdateErrorFact("requested", error, options.env);
     warn(
       `Update diagnostics could not be recorded (${fact.code}): ${fact.message ?? "no error message"}`,
     );
   }
+}
+
+export function finishUpdateRun(
+  runId: string,
+  result: FinishUpdateRunResult & {
+    before?: UpdateRunRecord["before"];
+    diagnostics?: Pick<UpdateRunResult, "verification" | "steps" | "recovery" | "rollbackOutcome">;
+  },
+  options: UpdateRunLedgerOptions = {},
+): UpdateRunRecord {
+  return mutateRun(
+    runId,
+    (record) => {
+      const diagnostics = result.diagnostics;
+      if (diagnostics) {
+        const steps = diagnostics.steps.flatMap(updateRunStepsFromResultStep);
+        applyUpdateRunDiagnostics(record, {
+          recovery: diagnostics.recovery,
+          rollbackOutcome: diagnostics.rollbackOutcome,
+          ...(diagnostics.verification
+            ? {
+                observation: {
+                  verification: diagnostics.verification,
+                  steps: steps.filter((step) => step.step === "gateway recovery verification"),
+                },
+              }
+            : {}),
+        });
+        for (const step of steps) {
+          upsertStep(record, step);
+        }
+      }
+      if (record.status === "running") {
+        record.before = { ...record.before, ...result.before };
+      }
+      finishUpdateRunRecord(record, result);
+    },
+    options,
+  );
 }

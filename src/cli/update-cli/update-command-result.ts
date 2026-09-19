@@ -17,12 +17,14 @@ import {
   writeControlPlaneUpdateRestartSentinel,
   type ControlPlaneUpdateSentinelMetaFile,
 } from "../../infra/update-control-plane-sentinel.js";
+import { formatUpdateFailureFact } from "../../infra/update-failure-facts-format.js";
 import { createUpdateErrorFact, type UpdateFailureFact } from "../../infra/update-failure-facts.js";
 import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownership.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { UpdateRunAdmissionBusyError } from "../../infra/update-run-admission.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import type { UpdateRunRecord } from "../../infra/update-run-record.js";
+import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -428,14 +430,28 @@ export function recordUpdateResultNextAction(
 ) {
   const run = params.opts.run;
   const active = committed ?? (run ? getUpdateRun(run.runId, { env: run.env }) : undefined);
+  const observed = result.verification !== undefined;
+  const verification = result.verification ?? active?.verification;
+  const steps = observed ? result.steps.flatMap(updateRunStepsFromResultStep) : active?.steps;
+  const recordedRecovery = active?.verification.recovery;
+  const failedVerification = steps?.findLast(
+    (step) =>
+      (step.step === "gateway verification" || step.step === "gateway recovery verification") &&
+      step.status === "failed",
+  );
   const nextAction = resolveUpdateResultNextAction({
-    result,
+    result:
+      observed &&
+      recordedRecovery?.serviceRestartSafe === false &&
+      recordedRecovery.reason !== "runtime-verification-failed"
+        ? { ...result, recovery: recordedRecovery }
+        : result,
     restart: params.coreAlreadyCurrent ? params.opts.restart : undefined,
-    serviceRunning: active?.verification.serviceRunning,
-    runningVersion: active?.verification.runningVersion,
-    verificationFailure: active?.steps.findLast(
-      (step) => step.step === "gateway verification" && step.status === "failed",
-    )?.detail,
+    serviceRunning: verification?.serviceRunning,
+    runningVersion: verification?.runningVersion,
+    verificationFailure: failedVerification?.failureFacts?.length
+      ? failedVerification.failureFacts.map(formatUpdateFailureFact).join("; ")
+      : failedVerification?.detail,
     env: run?.env ?? params.ownedManagedUpdateEnv ?? process.env,
   });
   if (run && active?.status === "running" && active.origin.nextAction !== nextAction) {

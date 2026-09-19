@@ -17,6 +17,7 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => closeOpenClawStateDatabaseForTest());
 
 import type { UpdateRunResult } from "../../infra/update-runner.js";
+import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 
 const mocks = vi.hoisted(() => ({
@@ -65,6 +66,7 @@ vi.mock("./update-command-config-snapshot.js", () => ({
   createUpdateConfigSnapshot: mocks.createUpdateConfigSnapshot,
 }));
 
+import { GatewayRestartHealthError } from "./update-command-service-command.js";
 import { maybeRestartService } from "./update-command-service.js";
 
 const gateway = { bootId: "test-boot", version: "2026.9.1", buildId: "new-build" };
@@ -90,6 +92,45 @@ describe("maybeRestartService", () => {
     mocks.waitForGatewayHealthyRestart.mockResolvedValue(healthy);
     mocks.inspectGatewayRestart.mockResolvedValue(healthy);
   });
+
+  it.each(["refresh inspection", "restart inspection", "restart command"] as const)(
+    "does not continue restart work after uncertain cleanup from %s",
+    async (source) => {
+      const cleanup = new CommandProcessCleanupError();
+      const failure = new GatewayRestartHealthError("readiness cleanup uncertain", {
+        cause: cleanup,
+      });
+      if (source === "restart command") {
+        mocks.runUpdatedInstallGatewayCommand.mockRejectedValueOnce(failure);
+      } else {
+        mocks.waitForGatewayHealthyRestart.mockRejectedValueOnce(failure);
+      }
+      const onVerified = vi.fn();
+      await expect(
+        maybeRestartService({
+          shouldRestart: true,
+          result: {
+            status: "ok",
+            mode: "npm",
+            before: { version: "2026.8.1" },
+            after: { version: gateway.version },
+            steps: [],
+            durationMs: 0,
+          },
+          opts: { json: true, run },
+          refreshServiceEnv: source === "refresh inspection",
+          serviceEnv: { HOME: "/home/operator" },
+          serviceInstallEnv: {},
+          requireRunningServiceAfterRestart: true,
+          gatewayPort: 18789,
+          timeoutMs: 1000,
+          onVerified,
+        }),
+      ).rejects.toBe(failure);
+      expect(onVerified).not.toHaveBeenCalled();
+      expect(mocks.runUpdatedInstallGatewayCommand).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([
     "current",

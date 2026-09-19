@@ -9,6 +9,7 @@ import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-a
 import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
 import { readCurrentGitUpdateRecovery } from "../../infra/update-runner-git-recovery.js";
 import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
@@ -85,6 +86,9 @@ export async function withUpdateCommandTerminalResult<T>(
     if (run) {
       terminalOwners.delete(run);
     }
+  }
+  if ("error" in outcome && hasCommandProcessCleanupError(outcome.error)) {
+    throw outcome.error;
   }
   const activationTimeout =
     "error" in outcome

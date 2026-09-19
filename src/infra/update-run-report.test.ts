@@ -36,6 +36,33 @@ function run(patch: Partial<UpdateRunRecord> = {}): UpdateRunRecord {
 afterEach(() => vi.restoreAllMocks());
 
 describe("update run report", () => {
+  it("reports observed serving health while preserving an unsafe restart constraint", async () => {
+    const record = run({
+      status: "failed",
+      reason: "post-update-plugins",
+      steps: [{ step: "gateway recovery verification", status: "completed", exitCode: 0 }],
+      verification: {
+        runningVersion: "2026.9.5",
+        versionMatch: true,
+        readyz: true,
+        settled: true,
+        recovery: { serviceRestartSafe: false, reason: "state-migration-started" },
+      },
+    });
+    const expected = "verified serving 2026.9.5; restart remains unsafe (state-migration-started)";
+    expect(renderUpdateRunReport(record).markdown).toContain(expected);
+    const report = await prepareUpdateFailureReport(
+      {
+        attemptId: record.runId,
+        recordedRun: record,
+        result: { status: "error", mode: "npm", steps: [], durationMs: 0 },
+      },
+      { stateDir: "/fixture/state", env: {} },
+    );
+    expect(report.body).toContain(`Recovery outcome: ${expected}`);
+    expect(record.verification.recovery?.serviceRestartSafe).toBe(false);
+  });
+
   it.each([
     ["external-supervisor-update-required", "Use your server or deployment's update workflow"],
     ["container-image-install", "Pull or build the target Docker/container image"],
@@ -96,14 +123,35 @@ describe("update run report", () => {
     },
   );
 
-  it.each(["private-customer-build", "2026.9.4-private-customer"])(
-    "redacts the private current version %s in public reports",
-    async (version) => {
+  it.each(
+    ["private-customer-build", "2026.9.4-private-customer"].flatMap((version) =>
+      [false, true].map((observed) => ({ version, observed })),
+    ),
+  )(
+    "redacts the private current version $version in public reports (recovery=$observed)",
+    async ({ version, observed }) => {
       vi.spyOn(reportHealth, "readUpdateRunReportHealth").mockResolvedValue({
         kind: "responding",
         version,
       });
-      const record = run({ status: "failed", verification: { versionMatch: false, port: 19123 } });
+      const record = run({
+        status: "failed",
+        ...(observed
+          ? { steps: [{ step: "gateway recovery verification", status: "completed", exitCode: 0 }] }
+          : {}),
+        verification: {
+          versionMatch: observed,
+          port: 19123,
+          ...(observed
+            ? {
+                runningVersion: version,
+                readyz: true,
+                settled: true,
+                recovery: { serviceRestartSafe: true, service: "healthy", version },
+              }
+            : {}),
+        },
+      });
       const report = await prepareUpdateFailureReport(
         {
           attemptId: record.runId,
@@ -112,7 +160,12 @@ describe("update run report", () => {
         },
         { stateDir: "/fixture/state", env: {} },
       );
-      expect(report.body).toContain("Recorded verification: service identity unavailable");
+      expect(report.body).toContain(
+        `Recorded verification: ${observed ? "version verified" : "service identity unavailable"}`,
+      );
+      if (observed) {
+        expect(report.body).toContain("Recovery outcome: verified serving [redacted-version]");
+      }
       expect(report.body).toContain(
         "Current health: Gateway answered on the recorded port ([redacted-version]).",
       );

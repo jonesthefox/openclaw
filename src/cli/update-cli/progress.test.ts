@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import type { UpdateRunRecord } from "../../infra/update-run-record.js";
+import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import { formatCliJsonFailure } from "../failure-output.js";
 import { createUpdateProgress, printResult } from "./progress.js";
@@ -332,6 +333,94 @@ describe("update progress", () => {
     expect(log).not.toHaveBeenCalled();
     expect(writeJson).toHaveBeenCalledExactlyOnceWith({ ...result, run });
   });
+
+  it.each([true, false, undefined])(
+    "prints raw recovery observations without rewriting saved history (running=%s)",
+    (serviceRunning) => {
+      const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+      const writeJson = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
+      run.status = "failed";
+      run.phase = "finished";
+      run.reason = "post-update-plugins";
+      run.after = { version: "2026.9.5" };
+      run.verification = {
+        serviceRunning: serviceRunning !== true,
+        runningVersion: "2026.8.99",
+        versionMatch: true,
+        readyz: true,
+        settled: true,
+        booted: true,
+        noticeDelivered: true,
+        doctorHint: "Retained lifecycle guidance",
+        recovery:
+          serviceRunning === true
+            ? { serviceRestartSafe: false, reason: "state-migration-started" }
+            : { serviceRestartSafe: true, version: "2026.8.99", service: "healthy" },
+      };
+      run.steps.push({
+        step: "gateway recovery verification",
+        status: "completed",
+        exitCode: 0,
+      });
+      const saved = structuredClone(run);
+      const latest: UpdateRunResult = {
+        ...result,
+        status: "error",
+        reason: "post-update-plugins",
+        after: run.after,
+        verification:
+          serviceRunning === undefined
+            ? {}
+            : {
+                serviceRunning,
+                runningVersion: "2026.9.5",
+                versionMatch: true,
+                readyz: serviceRunning,
+                settled: serviceRunning,
+              },
+        ...(serviceRunning === true
+          ? { recovery: { serviceRestartSafe: true, version: "2026.9.5", service: "healthy" } }
+          : {}),
+        steps:
+          serviceRunning === undefined
+            ? []
+            : [
+                {
+                  name: "gateway recovery verification",
+                  command: "gateway verification",
+                  cwd: "/fixture",
+                  durationMs: 0,
+                  exitCode: serviceRunning ? 0 : 1,
+                  ...(!serviceRunning
+                    ? { failureFacts: [{ check: "service", code: "service-not-running" }] }
+                    : {}),
+                },
+              ],
+      };
+
+      printResult(latest, { run: context });
+
+      const output = log.mock.calls.flat().join("\n");
+      expect(output).toContain("gateway booted");
+      expect(output).toContain("Retained lifecycle guidance");
+      expect(output).not.toContain("2026.8.99");
+      if (serviceRunning === undefined) {
+        expect(output).not.toContain("service running");
+        expect(output).not.toContain("service stopped");
+        expect(output).not.toContain("verified serving");
+      } else {
+        expect(output).toContain(serviceRunning ? "service running" : "service stopped");
+        expect(output).toContain(
+          serviceRunning
+            ? "verified serving 2026.9.5; restart remains unsafe (state-migration-started)"
+            : "not serving (service-not-running)",
+        );
+      }
+      printResult(latest, { json: true, run: context });
+      expect(writeJson).toHaveBeenCalledExactlyOnceWith({ ...latest, run: saved });
+      expect(run).toEqual(saved);
+    },
+  );
 
   it("suspends every ledger reader through activation and resumes the recorded timeline", () => {
     vi.useFakeTimers();

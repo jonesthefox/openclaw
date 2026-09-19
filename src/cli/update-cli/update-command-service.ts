@@ -18,6 +18,7 @@ import {
 } from "../../infra/update-run-ledger.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import { CLI_NAME } from "../cli-name.js";
 import { formatCliCommand } from "../command-format.js";
@@ -175,19 +176,24 @@ export async function tryInstallShellCompletion(opts: {
   }
 }
 
-/** A restart command can throw before health probes; replace pre-activation facts at that boundary. */
-export async function recordFailedUpdateGatewayState(
+/** Observe native state when a restart fails before health probes. */
+export async function readFailedUpdateGatewayState(
   run: UpdateCommandOptions["run"],
   env: NodeJS.ProcessEnv,
-): Promise<void> {
+): Promise<UpdateRunResult["verification"]> {
   if (!run) {
-    return;
+    return undefined;
   }
   const executor = run.executorFence;
   executor?.assertCurrent();
   const runtime = await resolveGatewayService()
     .readRuntime(env)
-    .catch(() => undefined);
+    .catch((error: unknown) => {
+      if (hasCommandProcessCleanupError(error)) {
+        throw error;
+      }
+      return undefined;
+    });
   executor?.assertCurrent();
   const verified = getUpdateRun(run.runId, { env: run.env })?.verification;
   // A failed readiness check does not invalidate health/version facts for the same process.
@@ -197,23 +203,22 @@ export async function recordFailedUpdateGatewayState(
     verified?.serviceRunning === true &&
     verified.pid === runtime.pid
   ) {
-    return;
+    const facts = { ...verified };
+    delete facts.recovery;
+    delete facts.rollbackOutcome;
+    return facts;
   }
-  recordUpdateRunVerification(
-    run.runId,
-    {
-      serviceRunning:
-        runtime?.status === "running" ? true : runtime?.status === "stopped" ? false : undefined,
-      pid: typeof runtime?.pid === "number" ? runtime.pid : undefined,
-      runningVersion: undefined,
-      runningBuildId: undefined,
-      versionMatch: undefined,
-      readyz: false,
-      settled: false,
-      channelsReady: false,
-    },
-    { env: run.env },
-  );
+  return {
+    serviceRunning:
+      runtime?.status === "running" ? true : runtime?.status === "stopped" ? false : undefined,
+    pid: typeof runtime?.pid === "number" ? runtime.pid : undefined,
+    runningVersion: undefined,
+    runningBuildId: undefined,
+    versionMatch: undefined,
+    readyz: false,
+    settled: false,
+    channelsReady: false,
+  };
 }
 
 export async function maybeRestartService(params: {
@@ -264,8 +269,11 @@ export async function maybeRestartService(params: {
   const failed = async (outcome: "failed" | "restart-health-failed" = "failed") => {
     // A restart can fail before health verification starts; recovery owns that phase.
     recordPhase("verifying");
-    await recordFailedUpdateGatewayState(params.opts.run, serviceEnv);
+    const facts = await readFailedUpdateGatewayState(params.opts.run, serviceEnv);
     assertCurrent();
+    if (params.opts.run && facts) {
+      recordUpdateRunVerification(params.opts.run.runId, facts, { env: params.opts.run.env });
+    }
     return outcome;
   };
   if (params.shouldRestart) {
@@ -492,6 +500,9 @@ export async function maybeRestartService(params: {
             recordUpdateGatewayHealth(params.opts.run, health, activation.gatewayPort);
           }
         } catch (err) {
+          if (hasCommandProcessCleanupError(err)) {
+            throw err;
+          }
           assertCurrent();
           if (
             err instanceof UpdateCommandRecoveryPendingError ||
@@ -596,7 +607,10 @@ export async function maybeRestartService(params: {
         recordPhase("restarting");
         const restart = await runUpdatedInstallGatewayCommand(activation, "restart").catch(
           (error: unknown) => {
-            if (!(error instanceof GatewayRestartHealthError)) {
+            if (
+              hasCommandProcessCleanupError(error) ||
+              !(error instanceof GatewayRestartHealthError)
+            ) {
               throw error;
             }
             // Activation succeeded; the update verifier owns the longer readiness budget.
@@ -663,6 +677,9 @@ export async function maybeRestartService(params: {
         defaultRuntime.log("");
       }
     } catch (err) {
+      if (hasCommandProcessCleanupError(err)) {
+        throw err;
+      }
       assertCurrent();
       if (
         err instanceof UpdateServiceLoadBoundaryError ||
