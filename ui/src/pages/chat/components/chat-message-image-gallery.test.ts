@@ -82,7 +82,9 @@ describe("message image gallery loading", () => {
           { type: "text", text: "Closing paragraph" },
         ],
       },
-    ].flatMap((fixture) => [false, true].map((persisted) => ({ ...fixture, persisted }))),
+    ].flatMap(({ format, content }) =>
+      [false, true].map((persisted) => ({ format, content, persisted })),
+    ),
   )(
     "keeps assistant $format in order and in one image gallery (persisted: $persisted)",
     async ({ content, persisted }) => {
