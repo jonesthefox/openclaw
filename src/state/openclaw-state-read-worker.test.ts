@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { ExecutionIdentityInspectionQuery } from "../audit/execution-identity-inspection.types.js";
+import { acquireStateDatabaseHandleExclusion } from "../infra/state-database-coordinator.js";
 import type {
   OwnedWorkerTask,
   WorkerTaskInput,
@@ -37,12 +38,19 @@ vi.mock("../infra/worker-task-pool.js", async (importOriginal) => ({
   createOwnedWorkerTaskPool: mock.create,
 }));
 
-import { closeOpenClawStateDatabaseByPathAsync } from "./openclaw-state-db-cache.js";
+import {
+  closeOpenClawStateDatabaseByPathAsync,
+  registerOpenClawStateDatabaseAsyncResource,
+} from "./openclaw-state-db-cache.js";
 import { executeExistingOpenClawStateRead } from "./openclaw-state-db-readonly.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
 } from "./openclaw-state-db.js";
+import { withOpenClawStateSettlementRead } from "./openclaw-state-settlement-read.js";
+import { selectProfileDisplayEntries } from "./user-profiles-internal.js";
+import { ensureProfileForEmail } from "./user-profiles.js";
 
 const taskCleanups: Array<() => void> = [];
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
@@ -116,6 +124,190 @@ const emptyReply: OpenClawStateReadReply = {
   sourceAdmitted: true,
   cells: [],
 };
+
+it("retains the shared pool after a resource drain fails until canonical retry", async () => {
+  const { options } = source();
+  const warm = queueTask();
+  warm.result.resolve(emptyReply);
+  await executeExistingOpenClawStateRead(options, { type: "fleet.list" });
+  const failure = new Error("accepted resource cleanup failed");
+  const close = vi.fn<() => Promise<void>>().mockRejectedValueOnce(failure).mockResolvedValue();
+  const unregister = registerOpenClawStateDatabaseAsyncResource({ close });
+  try {
+    await expect(closeOpenClawStateDatabaseAsync()).rejects.toBe(failure);
+    expect(mock.closePool).not.toHaveBeenCalled();
+    expect(() => captureOpenClawStateWorkerContext(options)).toThrow(/closed/i);
+    await closeOpenClawStateDatabaseAsync();
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(mock.closePool).toHaveBeenCalledOnce();
+    expect(close.mock.invocationCallOrder[1]).toBeLessThan(
+      mock.closePool.mock.invocationCallOrder[0]!,
+    );
+  } finally {
+    unregister();
+  }
+});
+
+it("drains accepted settlement before retiring the shared pool during whole-cache close", async () => {
+  const root = tempDirs.make("openclaw-settlement-global-close-");
+  const pathname = path.join(root, "source.sqlite");
+  const options = { path: pathname, env: { OPENCLAW_STATE_DIR: root } };
+  const profile = ensureProfileForEmail("global-close@example.test", options);
+  const descriptor = selectProfileDisplayEntries(openOpenClawStateDatabase(options).db, [
+    profile.id,
+  ])[0]![1];
+  await closeOpenClawStateDatabaseAsync();
+  const warm = queueTask();
+  warm.result.resolve(emptyReply);
+  await executeExistingOpenClawStateRead(options, { type: "fleet.list" });
+  const context = captureOpenClawStateWorkerContext(options);
+  const mutationSettled = createDeferredCore();
+  const poolStopping = createDeferredCore();
+  const poolStopped = createDeferredCore();
+  mock.closePool.mockImplementationOnce(() => {
+    poolStopping.resolve();
+    return poolStopped.promise;
+  });
+  const delivery = new Error("mutation result delivery failed");
+  const publish = vi.fn();
+  const release = vi.fn();
+  const result = withOpenClawStateSettlementRead(context, async (read) => {
+    read.bind(
+      { type: "userProfiles.avatar.reconcile", profileId: profile.id },
+      Promise.resolve({ kind: "completed" }),
+      publish,
+      release,
+    );
+    await mutationSettled.promise;
+    throw delivery;
+  }).catch((error: unknown) => error);
+  const recovery = queueTask();
+  recovery.result.resolve({
+    ok: true,
+    type: "userProfiles.avatar.reconcile",
+    sourceAdmitted: true,
+    profile: descriptor,
+  });
+  const closing = closeOpenClawStateDatabaseAsync();
+  void closing.catch(() => {});
+  try {
+    // Let the actual resource drain enter while the accepted producer is still held.
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    mutationSettled.resolve();
+    expect(await result).toBe(delivery);
+    expect((await recovery.captured).command).toEqual({
+      type: "userProfiles.avatar.reconcile",
+      profileId: profile.id,
+    });
+    expect(publish).toHaveBeenCalledExactlyOnceWith(descriptor);
+    expect(release).toHaveBeenCalledOnce();
+    expect(recovery.close).toHaveBeenCalledOnce();
+    await poolStopping.promise;
+    expect(publish.mock.invocationCallOrder[0]).toBeLessThan(
+      mock.closePool.mock.invocationCallOrder[0]!,
+    );
+    poolStopped.resolve();
+    await closing;
+    const exclusion = acquireStateDatabaseHandleExclusion({ databasePath: pathname });
+    exclusion.release();
+  } finally {
+    mutationSettled.resolve();
+    poolStopped.resolve();
+    await Promise.allSettled([result, closing]);
+  }
+});
+
+it.each([false, true])(
+  "preserves settlement task errors and source custody through canonical retry (retry fails=%s)",
+  async (retryFails) => {
+    const root = tempDirs.make("openclaw-settlement-task-failure-");
+    const pathname = path.join(root, "source.sqlite");
+    const options = { path: pathname, env: { OPENCLAW_STATE_DIR: root } };
+    const profile = ensureProfileForEmail("settlement@example.test", options);
+    const descriptor = selectProfileDisplayEntries(openOpenClawStateDatabase(options).db, [
+      profile.id,
+    ])[0]![1];
+    await closeOpenClawStateDatabaseAsync();
+    const context = captureOpenClawStateWorkerContext(options);
+    const command = { type: "userProfiles.avatar.reconcile", profileId: profile.id } as const;
+    const reply: OpenClawStateReadReply = {
+      ok: true,
+      type: command.type,
+      sourceAdmitted: true,
+      profile: descriptor,
+    };
+    const task = queueTask();
+    const delivery = new Error("mutation result delivery failed");
+    const query = new Error("interrupted settlement task failed");
+    const retirement = new Error("first settlement worker stop failed");
+    const retryFailure = new Error("settlement close retry failed");
+    task.close.mockRejectedValueOnce(retirement);
+    if (retryFails) {
+      task.close.mockRejectedValueOnce(retryFailure);
+    }
+    const mutation = vi.fn();
+    const publish = vi.fn();
+    const release = vi.fn();
+    const result = withOpenClawStateSettlementRead(context, async (read) => {
+      mutation();
+      read.bind(command, Promise.resolve({ kind: "completed" }), publish, release);
+      throw delivery;
+    }).catch((error: unknown) => error);
+    const firstRequest = await task.captured;
+    task.result.reject(query);
+    const failure = await result;
+    expect(failure).toMatchObject({
+      errors: [delivery, expect.objectContaining({ errors: [query, retirement] })],
+    });
+    expect(publish).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    expect(() =>
+      acquireStateDatabaseHandleExclusion({ databasePath: pathname, busyTimeoutMs: 0 }),
+    ).toThrow();
+    if (retryFails) {
+      await expect(closeOpenClawStateDatabaseByPathAsync(pathname)).rejects.toBe(retryFailure);
+      expect(publish).not.toHaveBeenCalled();
+      expect(release).not.toHaveBeenCalled();
+    }
+    const retry = queueTask();
+    const retryCloseStarted = createDeferredCore();
+    const stopped = createDeferredCore();
+    retry.close.mockImplementationOnce(() => {
+      retryCloseStarted.resolve();
+      return stopped.promise;
+    });
+    const closing = closeOpenClawStateDatabaseByPathAsync(pathname);
+    try {
+      const retryRequest = await retry.captured;
+      for (const request of [firstRequest, retryRequest]) {
+        expect(request).toMatchObject({
+          command,
+          databasePath: pathname,
+          location: pathname,
+          expectedIdentity: context.admission.identity.key,
+          checkFreshAdmission: false,
+        });
+      }
+      retry.result.resolve(reply);
+      await retryCloseStarted.promise;
+      expect(publish).not.toHaveBeenCalled();
+      expect(release).not.toHaveBeenCalled();
+    } finally {
+      retry.result.resolve(reply);
+      stopped.resolve();
+      await closing;
+    }
+    expect(publish).toHaveBeenCalledExactlyOnceWith(descriptor);
+    expect(release).toHaveBeenCalledOnce();
+    expect(mutation).toHaveBeenCalledOnce();
+    expect(task.close).toHaveBeenCalledTimes(retryFails ? 3 : 2);
+    expect(retry.close).toHaveBeenCalledOnce();
+    const exclusion = acquireStateDatabaseHandleExclusion({ databasePath: pathname });
+    exclusion.release();
+  },
+);
 
 it.each([false, true])(
   "preserves task and cleanup errors across explicit retirement retries (retry fails=%s)",
@@ -394,36 +586,45 @@ it("closes only the operation matching a state path while its sibling finishes n
   expect(mock.closePool).toHaveBeenCalledOnce();
 });
 
-it("charges retained UTF-8 input and keeps the captured request while dispatch waits", async () => {
-  const { options } = source();
-  const tenantId = "租户🦞".repeat(512);
-  const command = { type: "fleet.get" as const, tenantId };
-  const dispatch = createDeferredCore();
-  const task = queueTask(dispatch.promise);
-  const result = executeExistingOpenClawStateRead(options, command);
-  const submitted = await task.submitted;
-  expect(Number.isSafeInteger(submitted.inputBytes)).toBe(true);
-  expect(submitted.inputBytes).toBeGreaterThanOrEqual(Buffer.byteLength(tenantId));
-  const originalRoot = options.env.OPENCLAW_STATE_DIR;
-  command.tenantId = "different tenant after admission";
-  options.env.OPENCLAW_STATE_DIR = path.join(originalRoot, "different");
-  const returned: OpenClawStateReadReply = {
-    ok: true,
-    type: "fleet.get",
-    sourceAdmitted: true,
-    cell: undefined,
-  };
-  try {
-    dispatch.resolve();
-    const request = await task.captured;
-    expect(request.command).toEqual({ type: "fleet.get", tenantId });
-    expect(request.context.environment.OPENCLAW_STATE_DIR).toBe(originalRoot);
-    task.result.resolve(returned);
-    expect(await result).toEqual(returned);
-  } finally {
-    dispatch.resolve();
-  }
-});
+it.each(["fleet.get", "userProfiles.avatar.reconcile"] as const)(
+  "captures and charges the retained UTF-8 selector while dispatch waits (%s)",
+  async (type) => {
+    const { options } = source();
+    const selector = "租户🦞".repeat(512);
+    const command =
+      type === "fleet.get" ? { type, tenantId: selector } : { type, profileId: selector };
+    const expected = { ...command };
+    const dispatch = createDeferredCore();
+    const task = queueTask(dispatch.promise);
+    const result = executeExistingOpenClawStateRead(options, command);
+    const submitted = await task.submitted;
+    const originalRoot = options.env.OPENCLAW_STATE_DIR;
+    if (command.type === "fleet.get") {
+      command.tenantId = "different tenant after admission";
+    } else {
+      command.profileId = "different profile after admission";
+    }
+    options.env.OPENCLAW_STATE_DIR = path.join(originalRoot, "different");
+    const returned: OpenClawStateReadReply =
+      type === "fleet.get"
+        ? { ok: true, type, sourceAdmitted: true, cell: undefined }
+        : { ok: true, type, sourceAdmitted: true, profile: undefined };
+    try {
+      expect(Number.isSafeInteger(submitted.inputBytes)).toBe(true);
+      expect(submitted.inputBytes).toBeGreaterThanOrEqual(Buffer.byteLength(selector));
+      dispatch.resolve();
+      const request = await task.captured;
+      expect(request.command).toEqual(expected);
+      expect(request.context.environment.OPENCLAW_STATE_DIR).toBe(originalRoot);
+      task.result.resolve(returned);
+      expect(await result).toEqual(returned);
+    } finally {
+      dispatch.resolve();
+      task.result.resolve(returned);
+      await Promise.allSettled([result]);
+    }
+  },
+);
 
 it.each([
   {

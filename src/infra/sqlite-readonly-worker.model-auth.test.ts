@@ -41,6 +41,7 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "./kysely-sync-cache-state.js";
 import * as sqliteWorker from "./sqlite-readonly-worker.js";
+import { SQLITE_WORKER_PREPARE_COMMAND } from "./sqlite-worker-contract.js";
 import { runWithSqliteWorkerStateContext } from "./sqlite-worker-state-context.js";
 
 const PROVIDER = "auth-runtime-fixture";
@@ -127,6 +128,9 @@ describe("model resolution auth row snapshots", () => {
         return prepare(sql);
       });
       try {
+        await runWithSqliteWorkerStateContext(context, () =>
+          backend[SQLITE_WORKER_PREPARE_COMMAND]?.("authProfiles.read"),
+        );
         const rows = await runWithSqliteWorkerStateContext(context, () =>
           backend.execute({ type: "authProfiles.read", input: { artifactPreserving: false } }),
         );
@@ -208,8 +212,12 @@ describe("model resolution auth row snapshots", () => {
     { change: "usage", cached: true, published: false },
     { change: "usage", cached: false, published: true },
     { change: "usage", cached: true, published: true },
+    { change: "usage", cached: false, published: "during" },
+    { change: "usage", cached: true, published: "during" },
     { change: "order", cached: true, published: false },
     { change: "disabled", cached: false, published: false },
+    { change: "order", cached: true, published: "during" },
+    { change: "disabled", cached: false, published: "during" },
     { change: "unrelated-order", cached: true, published: false },
   ] as const)(
     "handles concurrent $change changes (cached=$cached, published=$published)",
@@ -227,10 +235,8 @@ describe("model resolution auth row snapshots", () => {
         if (change === "unrelated-order") {
           await state.writeAuthProfiles(store, "other");
         }
-        if (published) {
+        if (published === true) {
           setRuntimeAuthProfileStoreSnapshot(store, state.agentDir());
-          // Materialize the published view through its persistence owner before the race.
-          await state.writeAuthProfiles(store);
         }
         const resolve = modelResolver(state, { automatic: true });
         if (cached) {
@@ -267,6 +273,9 @@ describe("model resolution auth row snapshots", () => {
               throw new Error("Model resolution completed before the usage-write barrier");
             }),
           ]);
+          if (published === "during") {
+            setRuntimeAuthProfileStoreSnapshot(store, state.agentDir());
+          }
           const updated: AuthProfileStore =
             change === "order" || change === "unrelated-order"
               ? { ...store, order: { [PROVIDER]: [fallbackProfileId, PROFILE_ID] } }

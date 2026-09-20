@@ -32,6 +32,7 @@ function readPool(): ReadPool {
   const state = resolveGlobalSingleton<ReadRuntime>(Symbol.for("openclaw.stateReadWorkers"), () => {
     const owned: ReadRuntime = {};
     registerOpenClawStateDatabaseAsyncResource({
+      phase: "after-resources",
       async close(identity) {
         // Per-path retirement closes only that path's operation handles. Idle workers own no DB.
         if (identity || !owned.pool) {
@@ -87,15 +88,16 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
             },
     };
   }
-  return command.type === "fleet.get"
-    ? { type: command.type, tenantId: command.tenantId }
-    : { type: command.type };
+  return { ...command };
 }
 
 function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   let bytes = Buffer.byteLength(command.type, "utf8");
   if (command.type === "fleet.get") {
     return bytes + Buffer.byteLength(command.tenantId, "utf8");
+  }
+  if (command.type === "userProfiles.avatar.reconcile") {
+    return bytes + Buffer.byteLength(command.profileId, "utf8");
   }
   if (command.type === "audit.run.inspect") {
     const input = command.input;
