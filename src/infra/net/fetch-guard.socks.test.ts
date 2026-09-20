@@ -15,6 +15,7 @@ import {
   setGlobalDispatcher,
 } from "undici";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   PROXY_FIXTURE_HOST as TARGET_HOST,
   PROXY_FIXTURE_PAYLOAD as PAYLOAD,
@@ -332,7 +333,7 @@ describe("SOCKS proxy protocol boundaries", () => {
       const server = stall === "proxy" ? net.createServer() : http.createServer();
       const sockets = new Set<net.Socket>();
       let sawTlsHandshake = false;
-      const handshake = Promise.withResolvers<void>();
+      const handshake = createDeferred();
       const observeTls = (chunk: Buffer) => {
         sawTlsHandshake = chunk[0] === 22;
         handshake.resolve();
