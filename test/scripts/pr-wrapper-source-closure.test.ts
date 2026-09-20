@@ -12,7 +12,7 @@ const components = [
 
 it.each([
   "src/state/openclaw-state.worker.ts",
-  "src/state/openclaw-state-worker-runtime.ts",
+  "src/state/openclaw-state-lease-worker.ts",
   "src/infra/sqlite-store.worker.ts",
 ])("retains %s and its eager runtime dependencies in the wrapper inventory", (entrypoint) => {
   const closure = collectRuntimeImportClosure(process.cwd(), [entrypoint]);
