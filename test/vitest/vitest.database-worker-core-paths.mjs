@@ -129,6 +129,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/commands/doctor/auth-alias-import-recovery.test.ts",
   "src/commands/doctor/auth-alias-preservation.test.ts",
   "src/commands/doctor/shared/missing-configured-plugin-install.test.ts",
+  "src/commands/doctor/shared/missing-configured-plugin-install.dependency-health.test.ts",
   "src/plugins/registry-refresh.test.ts",
   "src/plugins/loader.trust-diagnostics.test.ts",
   "src/plugins/loader.runtime-registry.test.ts",

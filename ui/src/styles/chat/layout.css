@@ -648,14 +648,6 @@ openclaw-pending-session-create {
   content-visibility: auto;
 }
 
-/* Auto content visibility clips row-edge focus rings. Keep hovered message
-   bubbles uncontained too: restoring containment during native mouse focus can
-   crash Chromium before a context menu opens. Metadata keeps its top-layer path. */
-.chat-virtual-row:focus-within,
-.chat-virtual-row:has(.chat-bubble:hover) {
-  content-visibility: visible;
-}
-
 /* Message jumps need real mounted-row sizes before their target settles.
    Native reader takeover restores ordinary overscan layout skipping. */
 .chat-thread-inner[data-measuring-rows] .chat-virtual-row {
