@@ -1,6 +1,9 @@
+import type { DatabaseSync } from "node:sqlite";
 import type { Insertable, Updateable } from "kysely";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../../infra/kysely-sync.js";
+import { deferSqlitePostCommitPublication } from "../../../infra/sqlite-post-commit.js";
 import type { OpenClawStateDatabase } from "../../../state/openclaw-state-db-contract.js";
+import { ensureColumn, tableHasColumns } from "../../../state/openclaw-state-db-schema-helpers.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../../state/openclaw-state-db.generated.js";
 
 type SubagentRunsTable = OpenClawStateKyselyDatabase["subagent_runs"];
@@ -13,11 +16,35 @@ export type SubagentRegistryWrite = {
   deleteRunIds: readonly string[];
 };
 
+const parentStoreSchemas = new WeakSet<DatabaseSync>();
+
+export function hasParentStoreColumns(db: DatabaseSync): boolean {
+  if (parentStoreSchemas.has(db)) {
+    return true;
+  }
+  const present = tableHasColumns(db, "subagent_runs", [
+    "requester_store_path",
+    "controller_store_path",
+  ]);
+  if (present && !db.isTransaction) {
+    parentStoreSchemas.add(db);
+  }
+  return present;
+}
+
 /** Upserts a prebound run on the exact supplied shared-state handle. */
 export function upsertSubagentRunRowInDatabase(
   database: OpenClawStateDatabase,
   row: BoundSubagentRunRecord,
 ): void {
+  if (!parentStoreSchemas.has(database.db)) {
+    if (!hasParentStoreColumns(database.db)) {
+      ensureColumn(database.db, "subagent_runs", "requester_store_path TEXT");
+      ensureColumn(database.db, "subagent_runs", "controller_store_path TEXT");
+    }
+    // A failed registration must roll back its first-use columns with the record.
+    deferSqlitePostCommitPublication(database.db, () => parentStoreSchemas.add(database.db));
+  }
   const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(database.db);
   executeSqliteQuerySync(
     database.db,

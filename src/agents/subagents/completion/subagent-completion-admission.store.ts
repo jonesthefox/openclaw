@@ -306,6 +306,7 @@ type BlockSubagentCompletionParams = {
   taskId: string;
   reason: string;
   suspendedReason?: "expiry" | "permanent_failure";
+  storeReplaced?: true;
   lastDropReason?: NonNullable<SubagentRunRecord["delivery"]>["lastDropReason"];
   disposition?: NonNullable<SubagentRunRecord["delivery"]>["disposition"];
   databaseOptions?: OpenClawStateDatabaseOptions;
@@ -368,7 +369,7 @@ function prepareBlockedSubagentCompletion(
   // outcomes, not reply readiness; missing or superseded owners still refuse settlement.
   if (
     !successful &&
-    (params.suspendedReason !== undefined ||
+    ((params.suspendedReason !== undefined && !params.storeReplaced) ||
       !["cancelled", "failed", "timed_out"].includes(task.status) ||
       resolveSubagentTaskTerminalStatus(subagent) !== task.status ||
       !["pending", "in_progress", "failed"].includes(subagent.delivery?.status ?? "pending"))
@@ -376,12 +377,22 @@ function prepareBlockedSubagentCompletion(
     return undefined;
   }
   const delivery = ensureDeliveryState(subagent);
+  if (
+    params.storeReplaced &&
+    (delivery.status === "delivered" ||
+      delivery.announcedAt !== undefined ||
+      delivery.deliveredAt !== undefined)
+  ) {
+    return undefined;
+  }
   delivery.payload ??= loadPendingFinalDeliveryPayload(subagent);
   Object.assign(delivery, {
     status: params.suspendedReason ? ("suspended" as const) : ("failed" as const),
-    disposition: params.suspendedReason
-      ? ("permanent_failure" as const)
-      : (params.disposition ?? delivery.disposition),
+    disposition: params.storeReplaced
+      ? ("intentional_non_delivery" as const)
+      : params.suspendedReason
+        ? ("permanent_failure" as const)
+        : (params.disposition ?? delivery.disposition),
     lastError: params.reason,
     deliveredAt: undefined,
     announcedAt: undefined,
@@ -392,7 +403,9 @@ function prepareBlockedSubagentCompletion(
     queueId: undefined,
   });
   Object.assign(subagent, { cleanupHandled: false, wakeOnDescendantSettle: undefined });
-  if (params.suspendedReason) {
+  if (params.storeReplaced) {
+    subagent.requesterSettleWake = undefined;
+  } else if (params.suspendedReason) {
     if (isCompletedRequesterDeliveryBlocked(subagent)) {
       // This requester already ran. An ordinary settle wake would replay it;
       // a separately owned yield batch still has genuine unfinished work.
@@ -405,7 +418,7 @@ function prepareBlockedSubagentCompletion(
   } else {
     subagent.suppressCompletionDelivery = true;
   }
-  if (successful) {
+  if (successful && !params.storeReplaced) {
     const terminal = resolveRequiredCompletionDeliveryFailureTerminalResult(params.reason);
     Object.assign(task, {
       ...terminal,
@@ -418,7 +431,9 @@ function prepareBlockedSubagentCompletion(
     lastEventAt: now,
   });
   const text =
-    successful && task.notifyPolicy !== "silent" ? formatTaskBlockedFollowupMessage(task) : null;
+    successful && !params.storeReplaced && task.notifyPolicy !== "silent"
+      ? formatTaskBlockedFollowupMessage(task)
+      : null;
   const queued = text
     ? prepareClaimedSessionDelivery(
         {
@@ -626,6 +641,8 @@ export function settleRequesterCompletionBatch(params: {
                 reason:
                   params.outcome.error ?? params.outcome.reason ?? "requester settle wake failed",
                 disposition: params.outcome.disposition,
+                storeReplaced: params.outcome.storeReplaced,
+                suspendedReason: params.outcome.storeReplaced ? "permanent_failure" : undefined,
               },
               now,
               subagent,

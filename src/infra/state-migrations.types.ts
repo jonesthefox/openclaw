@@ -215,6 +215,8 @@ export const LEGACY_STATE_MIGRATION_PLAN_SCHEMA_VERSION =
 
 export type LegacyStateMigrationMode = "automatic" | "doctor";
 
+export type LegacyStateMigrationInvocationPurpose = "startup" | "doctor";
+
 export type LegacyStateMigrationEndpoint =
   | { kind: "path"; path: string }
   | { kind: "sqlite"; path: string }
@@ -242,6 +244,8 @@ export type LegacyStateMigrationStepReceipt = Omit<LegacyStateMigrationStepPlan,
   recoveredAgentDatabasePaths?: readonly string[];
   rehearsal?: MigrationMessages["rehearsal"];
   refusal?: { code: string; message: string };
+  /** The first refused step that prevented this step from running. */
+  originatingRefusal?: { stepId: string; code: string; message: string };
 };
 
 export type PlannedPluginDoctorAction = {

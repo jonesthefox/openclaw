@@ -358,6 +358,14 @@ export async function spawnSubagentDirect(
       requesterSessionKey: requesterInternalKey,
       agentId: targetAgentId,
     });
+    const recordRequesterParticipation = () =>
+      recordSessionParticipantBestEffort({
+        promptedAt,
+        identity: { type: "agent", id: requesterAgentId },
+        agentId: targetAgentId,
+        sessionKey: childSessionKey,
+        storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId }),
+      });
     const launchChildRun = async (assertDispatchCurrent?: () => void) =>
       await callNativeSubagentGateway(
         withSubagentGatewayExecutionIdentity(
@@ -441,13 +449,7 @@ export async function spawnSubagentDirect(
         const launch = await launchChildRun(assertActive);
         taskRowOwnership = launch.taskRowOwnership;
         acceptedChildRunId = readGatewayRunId(launch.response) ?? childIdem;
-        recordSessionParticipantBestEffort({
-          promptedAt,
-          identity: { type: "agent", id: requesterAgentId },
-          agentId: targetAgentId,
-          sessionKey: childSessionKey,
-          storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId }),
-        });
+        recordRequesterParticipation();
         return { runId: acceptedChildRunId };
       },
       async cleanupOnFailure({ phase, state, registrationScope }) {
@@ -623,16 +625,7 @@ export async function spawnSubagentDirect(
             preparation: pipelineResult.state.contextEnginePreparation,
             provisionalSessionIdentity,
             launchChildRun,
-            recordParticipant: () =>
-              recordSessionParticipantBestEffort({
-                promptedAt,
-                identity: { type: "agent", id: requesterAgentId },
-                agentId: targetAgentId,
-                sessionKey: childSessionKey,
-                storePath: resolveSessionStorePathCore(cfg.session?.store, {
-                  agentId: targetAgentId,
-                }),
-              }),
+            recordParticipant: recordRequesterParticipation,
             emitSpawnLifecycleHooks,
             cleanupFailedSpawn,
           }),

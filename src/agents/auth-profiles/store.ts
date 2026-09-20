@@ -25,7 +25,6 @@ import {
   loadInheritedAuthProfileStore,
   resolveRuntimeAuthProfileStoreFromSnapshots,
 } from "./inherited-store.js";
-import { isLegacyOAuthRef } from "./legacy-oauth-ref.js";
 import {
   AuthProfileMigrationRequiredError,
   AuthProfileStoreUnreadableError,
@@ -37,6 +36,7 @@ import {
   warnLegacyAuthProfileSourcesIgnored,
 } from "./legacy-source-diagnostic.js";
 import { resolveLegacyAuthProfileSourceCandidates } from "./legacy-source-files.js";
+import { captureOAuthRefreshClaimPublication } from "./oauth-refresh-marker.js";
 import {
   shouldPersistRuntimeExternalOAuthProfile,
   type RuntimeExternalOAuthProfile,
@@ -124,7 +124,8 @@ import {
   type AuthProfileStoreOwner,
   type PreparedAuthProfileStoreOwner,
 } from "./sqlite.js";
-import { buildPersistedAuthProfileState, loadPersistedAuthProfileState } from "./state.js";
+import { loadPersistedAuthProfileState } from "./state.js";
+import { prepareAuthProfileStoreMutation } from "./store-mutation.js";
 import type {
   AuthProfileCredentialSource,
   AuthProfileStore,
@@ -155,7 +156,6 @@ type SaveAuthProfileStoreOptions = {
   syncExternalCli?: boolean;
 };
 
-const INLINE_OAUTH_TOKEN_FIELDS = ["access", "refresh", "idToken"] as const;
 type AuthProfileRuntimeMode =
   | { kind: "env-only" }
   | { kind: "agent-dir"; agentDir: string; sharedStore?: AuthProfileStore; env: NodeJS.ProcessEnv };
@@ -236,60 +236,6 @@ function resolveRuntimeAuthProfileLoadOptions(
     return options;
   }
   return { ...options, inheritedAuthDir: mode.agentDir };
-}
-
-function hasInlineOAuthTokenMaterial(credential: object): boolean {
-  return INLINE_OAUTH_TOKEN_FIELDS.some((field) => Reflect.get(credential, field) !== undefined);
-}
-
-function hasChangedInlineOAuthTokenMaterial(params: {
-  credential: object;
-  existingCredential: object;
-}): boolean {
-  return INLINE_OAUTH_TOKEN_FIELDS.some((field) => {
-    const credentialValue = Reflect.get(params.credential, field);
-    if (credentialValue === undefined) {
-      return false;
-    }
-    return !isDeepStrictEqual(credentialValue, Reflect.get(params.existingCredential, field));
-  });
-}
-
-function preserveLegacyOAuthRefsOnSave(params: {
-  payload: ReturnType<typeof buildPersistedAuthProfileSecretsStore>;
-  existingRaw: unknown;
-}): ReturnType<typeof buildPersistedAuthProfileSecretsStore> {
-  if (!isRecord(params.existingRaw) || !isRecord(params.existingRaw.profiles)) {
-    return params.payload;
-  }
-  let nextProfiles: typeof params.payload.profiles | undefined;
-  for (const [profileId, credential] of Object.entries(params.payload.profiles)) {
-    if (credential.type !== "oauth" || credential.oauthRef !== undefined) {
-      continue;
-    }
-    const existingCredential = params.existingRaw.profiles[profileId];
-    if (
-      !isRecord(existingCredential) ||
-      !isLegacyOAuthRef(existingCredential.oauthRef) ||
-      existingCredential.type !== "oauth"
-    ) {
-      continue;
-    }
-    if (
-      hasInlineOAuthTokenMaterial(credential) &&
-      hasChangedInlineOAuthTokenMaterial({ credential, existingCredential })
-    ) {
-      continue;
-    }
-    // Preserve legacy oauthRef ownership when current save data did not replace
-    // inline OAuth material; otherwise older credential references would be lost.
-    nextProfiles ??= { ...params.payload.profiles };
-    nextProfiles[profileId] = {
-      ...credential,
-      oauthRef: existingCredential.oauthRef,
-    };
-  }
-  return nextProfiles ? { ...params.payload, profiles: nextProfiles } : params.payload;
 }
 
 let runtimeSnapshotPublisherForTest: ((publish: () => void) => void) | undefined;
@@ -495,7 +441,7 @@ function mergeRuntimeExternalProfileState(params: {
 }): AuthProfileStore {
   const existingRuntimeProfileIds = new Set(params.existing.runtimeExternalProfileIds ?? []);
   if (existingRuntimeProfileIds.size === 0) {
-    return params.next;
+    return mergeRuntimeExternalProfileReferences(params);
   }
   const merged = cloneAuthProfileStore(params.next);
   const mergedRuntimeProfileIds = new Set(merged.runtimeExternalProfileIds ?? []);
@@ -1134,7 +1080,12 @@ export function restoreAuthProfileStorePersistenceSnapshot(
                 credentialsChanged: credentialsRestored,
                 profileSetChanged: credentialsRestored && profileSetChanged,
                 stateChanged: stateRestored,
+                selectionChanged: stateRestored,
                 profileIds: credentialsRestored ? changedProfileIds : [],
+                oauthRefreshClaimIds: captureOAuthRefreshClaimPublication(
+                  restoredProfiles,
+                  credentialsRestored ? changedProfileIds : [],
+                ),
               },
               owner,
             );
@@ -1911,27 +1862,17 @@ export function createAuthProfileStoreRuntime(
       persistedStores,
     });
     const existingRaw = readPersistedAuthProfileStoreRaw(persistenceAgentDir, database);
-    const payload = preserveLegacyOAuthRefsOnSave({
-      payload: buildPersistedAuthProfileSecretsStore(localStore),
+    const { payload, statePayload, publication } = prepareAuthProfileStoreMutation({
       existingRaw,
+      existingState: readPersistedAuthProfileStateRaw(persistenceAgentDir, database),
+      store: localStore,
+      selectionProfiles: {
+        ...persistedStores.mainStore?.profiles,
+        ...store.profiles,
+        ...localStore.profiles,
+      },
     });
-    const existingProfiles =
-      isRecord(existingRaw) && isRecord(existingRaw.profiles) ? existingRaw.profiles : {};
-    const changedProfileIds = [
-      ...new Set([...Object.keys(existingProfiles), ...Object.keys(payload.profiles)]),
-    ].filter(
-      (profileId) => !isDeepStrictEqual(existingProfiles[profileId], payload.profiles[profileId]),
-    );
-    const profileSetChanged = changedProfileIds.some(
-      (profileId) =>
-        Object.hasOwn(existingProfiles, profileId) !== Object.hasOwn(payload.profiles, profileId),
-    );
-    const credentialsChanged = !isDeepStrictEqual(existingRaw, payload);
-    const statePayload = buildPersistedAuthProfileState(localStore);
-    const stateChanged = !isDeepStrictEqual(
-      readPersistedAuthProfileStateRaw(persistenceAgentDir, database),
-      statePayload,
-    );
+    const { credentialsChanged, stateChanged } = publication;
     const suppliedRuntimeStore = publishFromSuppliedStore
       ? markRuntimePersistedProfiles(
           buildLocalAuthProfileStoreForSave({
@@ -1963,16 +1904,7 @@ export function createAuthProfileStoreRuntime(
         ? listRuntimeAuthProfileStoreSnapshotsForSharedOwner(owner)
         : [];
       if (credentialsChanged || stateChanged) {
-        noteRuntimeAuthProfileStorePersistedMutation(
-          persistenceAgentDir,
-          {
-            credentialsChanged,
-            profileSetChanged,
-            stateChanged,
-            profileIds: changedProfileIds,
-          },
-          owner,
-        );
+        noteRuntimeAuthProfileStorePersistedMutation(persistenceAgentDir, publication, owner);
       }
       try {
         assertAuthProfileMigrationStateAtDatabasePath(savedAuthPath);

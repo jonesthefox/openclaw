@@ -237,7 +237,7 @@ describe("session accessor readonly listing", () => {
     expect(isOpenClawAgentDatabaseOpen(resolveOpenClawAgentSqlitePath(listScope))).toBe(false);
   });
 
-  it("returns an empty list without creating or registering a missing agent database", () => {
+  it("keeps missing database probes read-only with empty exact results", () => {
     const stateDir = makeTempDir(tempDirs, "openclaw-session-readonly-missing-");
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const agentId = "worker-1";
@@ -250,7 +250,7 @@ describe("session accessor readonly listing", () => {
       loadExactSessionEntryCandidatesReadOnlyBatch([
         { agentId, env, sessionKeys: [`agent:${agentId}:main`] },
       ]),
-    ).toEqual([{ ok: true, value: [] }]);
+    ).toMatchObject([{ ok: true, value: [] }]);
     expect(
       readSessionStoreSummaryReadOnly(
         { agentId, env },
@@ -527,7 +527,13 @@ describe("session accessor readonly listing", () => {
       "DROP TABLE transcript_events;",
     );
 
-    expect(() => readSessionTranscriptWatermark(scope)).toThrow(/no such table: transcript_events/);
+    expect(() => readSessionTranscriptWatermark(scope)).toThrow(
+      expect.objectContaining({
+        name: "SessionMetadataUnavailableError",
+        reason: "table-missing",
+        missingTables: ["transcript_events"],
+      }),
+    );
   });
 
   it("probes lifecycle status without creating or registering a missing database", () => {
@@ -730,7 +736,7 @@ describe("session accessor readonly listing", () => {
     ]);
   });
 
-  it.each(["identity", "timestamp", "json", "participant", "participant-integer"])(
+  it.each(["identity", "timestamp", "json", "nul", "participant", "participant-integer"])(
     "rejects stale valid %s evidence without relying on a fallback read",
     async (corruption) => {
       const stateDir = autoTempDirs.make("openclaw-session-readonly-stale-valid-evidence-");
@@ -770,7 +776,7 @@ describe("session accessor readonly listing", () => {
               });
         database.db
           .prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
-          .run(entryJson, sessionKey);
+          .run(corruption === "nul" ? entryJson + "\0" : entryJson, sessionKey);
       }
       database.db
         .prepare("UPDATE session_nodes SET entry_valid = 1 WHERE session_key = ?")

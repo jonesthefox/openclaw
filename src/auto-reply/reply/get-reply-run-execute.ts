@@ -113,9 +113,9 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     hasUserBody,
     shouldInjectGroupIntro,
     typingMode,
-    allowEmptyAssistantReplyAsSilent,
     terminalReplyExpectation,
   } = context;
+  const runParams = { ...params };
   const {
     ctx,
     sessionCtx,
@@ -126,12 +126,8 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     provider,
     model,
     requestedRouteResolution,
-    typing,
     opts,
-    defaultModel,
     timeoutMs,
-    blockStreamingEnabled,
-    blockReplyChunking,
     resolvedBlockStreamingBreak,
     sessionStore,
     sessionKey,
@@ -554,7 +550,6 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       extraSystemPromptStatic,
       cliSessionBindingFacts,
       skipProviderRuntimeHints: useFastReplyRuntime,
-      allowEmptyAssistantReplyAsSilent,
       terminalReplyExpectation,
       suppressTranscriptOnlyAssistantPersistence: isRoomEvent,
       ...(opts?.skillWorkshopProposalRevision
@@ -625,6 +620,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     inheritedCronCreatorAuthorityCapability ?? createdCronCreatorAuthorityCapability;
   const execute = () =>
     runReplyAgent({
+      ...runParams,
       commandBody: prefixedCommandBody,
       transcriptCommandBody,
       followupRun,
@@ -649,20 +645,11 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
               ...(cronCreatorAuthorityCapability ? { cronCreatorAuthorityCapability } : {}),
             }
           : opts,
-      typing,
       sessionEntry: preparedSessionState.sessionEntry,
-      sessionStore,
-      sessionKey,
       runtimePolicySessionKey,
-      storePath,
-      defaultModel,
       resolvedVerboseLevel: resolvedVerboseLevel ?? "off",
       toolProgressDetail: resolveAgentConfig(cfg, agentId)?.toolProgressDetail,
       isNewSession: params.isNewSession,
-      blockStreamingEnabled,
-      blockReplyChunking,
-      resolvedBlockStreamingBreak,
-      sessionCtx,
       shouldInjectGroupIntro,
       typingMode,
       resetTriggered: effectiveResetTriggered,
