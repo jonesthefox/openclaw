@@ -349,12 +349,13 @@ export async function prepareUpdateFailureReport(
   const rollback = input.result.rollbackOutcome ?? recordedRun?.verification?.rollbackOutcome;
   const action = recordedRun?.trigger ?? input.action;
   const installation = recordedRun?.target?.installationMethod;
-  const verification =
+  const projection =
     input.result.verification || recordedRun?.verification
-      ? updateRunReportInputFromResult(input.result, recordedRun).verification
+      ? updateRunReportInputFromResult(input.result, recordedRun)
       : undefined;
-  const identity = verification
-    ? formatUpdateRunIdentity(verification, recordedRun?.after ?? input.result.after ?? {})
+  const verification = projection?.verification;
+  const identity = projection
+    ? formatUpdateRunIdentity(projection.verification, projection.after)
     : undefined;
   const currentHealth = verification
     ? await readUpdateRunReportHealth(verification, { env })

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { prepareUpdateFailureReport } from "../../infra/update-failure-report-prepare.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import type { UpdateRunRecord } from "../../infra/update-run-record.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
@@ -333,6 +334,61 @@ describe("update progress", () => {
     expect(log).not.toHaveBeenCalled();
     expect(writeJson).toHaveBeenCalledExactlyOnceWith({ ...result, run });
   });
+
+  it.each([
+    { history: "running", rolledBack: false },
+    { history: "succeeded", rolledBack: false },
+    { history: "rolled-back", rolledBack: false },
+    { history: "rolled-back", rolledBack: true },
+  ] as const)(
+    "prints current failure facts over $history history (verified rollback=$rolledBack)",
+    async ({ history, rolledBack }) => {
+      const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+      const writeJson = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
+      run.status = history;
+      run.phase = history === "running" ? "verifying" : "finished";
+      run.reason = rolledBack ? "doctor-failed" : "build-failed";
+      run.after = { version: "2026.9.4" };
+      run.target = { version: "2026.9.5" };
+      const saved = structuredClone(run);
+      const latest: UpdateRunResult = {
+        ...result,
+        status: "error",
+        reason: "doctor-failed",
+        before: { version: "2026.9.4" },
+        after: { version: rolledBack ? "2026.9.4" : "2026.9.5" },
+        verification: { runningVersion: "2026.9.4", versionMatch: rolledBack },
+        ...(rolledBack
+          ? {
+              recovery: {
+                serviceRestartSafe: true,
+                packageRollbackVerified: true,
+                service: "healthy",
+                version: "2026.9.4",
+              },
+            }
+          : {}),
+      };
+
+      printResult(latest, { run: context });
+      const output = log.mock.calls.flat().join("\n");
+      expect(output).toContain(
+        rolledBack
+          ? "OpenClaw update rolled back to 2026.9.4: doctor-failed"
+          : "OpenClaw update failed: doctor-failed",
+      );
+      const identity = rolledBack ? "version verified" : "version mismatch";
+      expect(output).toContain(identity);
+      const publicReport = await prepareUpdateFailureReport(
+        { attemptId: runId, result: latest, recordedRun: run },
+        { env: {}, stateDir: "/isolated/update-progress" },
+      );
+      expect(publicReport.body).toContain(`Recorded verification: ${identity}`);
+      printResult(latest, { json: true, run: context });
+      expect(writeJson).toHaveBeenCalledExactlyOnceWith({ ...latest, run: saved });
+      expect(run).toEqual(saved);
+    },
+  );
 
   it.each([true, false, undefined])(
     "prints raw recovery observations without rewriting saved history (running=%s)",

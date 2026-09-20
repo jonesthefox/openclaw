@@ -2,6 +2,7 @@ import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { UPDATE_RUN_PHASES } from "../../packages/gateway-protocol/src/update-run-vocabulary.js";
 import {
   formatUpdateActivationTimeoutGuidance,
+  isVerifiedUpdateRollback,
   UPDATE_ACTIVATION_TIMEOUT_REASON,
   UPDATE_INSTALL_SKIP_GUIDANCE,
 } from "../shared/update-outcome.js";
@@ -424,16 +425,26 @@ export function updateRunReportInputFromResult(
   const preserveRecorded = result.status === "ok" && result.verification === undefined;
   const { booted, noticeDelivered, doctorHint, recovery, rollbackOutcome } =
     recorded?.verification ?? {};
+  const resultStatus =
+    result.status === "ok" ? "succeeded" : result.status === "error" ? "failed" : "skipped";
+  // Failed diagnostics may not have reached the ledger yet.
+  const recordedOutcome = result.status === "error" ? undefined : recorded;
   return {
-    status: result.status === "ok" ? "succeeded" : result.status === "error" ? "failed" : "skipped",
-    phase: "finished",
-    reason: result.reason ?? null,
-    origin: {},
-    before: result.before ?? {},
-    after: result.after ?? {},
-    repair: [],
-    downtimeMs: null,
-    ...recorded,
+    status:
+      recordedOutcome?.status ??
+      (recorded?.status === "rolled-back" && isVerifiedUpdateRollback(result)
+        ? "rolled-back"
+        : resultStatus),
+    phase: recordedOutcome?.phase ?? "finished",
+    reason:
+      recordedOutcome?.reason !== undefined
+        ? recordedOutcome.reason
+        : (result.reason ?? recorded?.reason ?? null),
+    origin: recorded?.origin ?? {},
+    before: recordedOutcome?.before ?? result.before ?? recorded?.before ?? {},
+    after: recordedOutcome?.after ?? result.after ?? recorded?.after ?? {},
+    repair: recorded?.repair ?? [],
+    downtimeMs: recorded?.downtimeMs ?? null,
     verification:
       preserveRecorded && recorded?.verification
         ? recorded.verification

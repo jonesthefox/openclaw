@@ -10,7 +10,7 @@ import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js"
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
-import { classifyUpdateOutcome } from "../../shared/update-outcome.js";
+import { classifyUpdateOutcome, isVerifiedUpdateRollback } from "../../shared/update-outcome.js";
 import { convergeUpdatePlugins } from "./update-command-convergence.js";
 import { verifyUpdateFailureRecovery } from "./update-command-failure-recovery.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
@@ -25,7 +25,6 @@ import { repairUpdateService } from "./update-command-repair-service.js";
 import { prepareUpdateRestart } from "./update-command-restart-context.js";
 import {
   markControlPlaneUpdateRestartSentinelFailureBestEffort,
-  isVerifiedUpdateRollback,
   UpdateCommandFailure,
   UpdateCommandPendingRecoveryFailure,
   resolveAutomaticUpdateTriage,
@@ -130,6 +129,7 @@ export async function finishUpdate(
     );
   };
   let rolledBack = false;
+  let originalServiceRecoveryHandled = false;
   let completedDowntimeMs: number | undefined = params.coreAlreadyCurrent ? 0 : undefined;
   let pendingRestartAtMs =
     params.preManagedServiceStop?.stoppedAtMs ??
@@ -225,6 +225,7 @@ export async function finishUpdate(
         );
       }
       result = rollback.result;
+      originalServiceRecoveryHandled = rollback.originalServiceRecovery !== undefined;
       rollbackStopState = rollback.stoppedForRollback;
       rolledBack = rollback.rolledBack;
       pendingRestartAtMs ??= rollbackStopState?.stoppedAtMs;
@@ -281,7 +282,6 @@ export async function finishUpdate(
     initialRestoreFailure?: { cause: unknown },
     notify = true,
   ): Promise<UpdateRunResult> => {
-    assertCurrent();
     const { result, recoverService } = await recoverFailedResult(
       initialResult,
       initialRecoverService,
@@ -339,7 +339,6 @@ export async function finishUpdate(
     const completedBeforeCleanup = deferredTerminal
       ? await captureUpdateCommandTerminalRecord(params, finalResult, assertCurrent)
       : undefined;
-    assertCurrent();
     recordNextAction(finalResult, completedBeforeCleanup?.record);
     if (notify && recoverService) {
       pendingNotify = false;
@@ -383,9 +382,11 @@ export async function finishUpdate(
     assertCurrent();
     const cleanupFailure = await recordUpdatePackageCompletion(params, finalResult, assertCurrent);
     assertCurrent();
-    if (finalResult.status === "error" || cleanupFailure) {
+    finalResult = cleanupFailure?.result ?? finalResult;
+    // Compensation of the original service is not proof of the requested installation.
+    if ((finalResult.status === "error" || cleanupFailure) && !originalServiceRecoveryHandled) {
       finalResult = await verifyUpdateFailureRecovery({
-        result: cleanupFailure?.result ?? finalResult,
+        result: finalResult,
         root: params.root,
         opts: params.opts,
         env: currentServiceStop()?.serviceEnv ?? params.ownedManagedUpdateEnv,

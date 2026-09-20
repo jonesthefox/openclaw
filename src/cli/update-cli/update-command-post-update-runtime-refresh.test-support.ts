@@ -1,5 +1,6 @@
 import { expect, it, type Mock } from "vitest";
-import { finishUpdate, type FinishUpdateParams } from "./update-command-post-update.js";
+import type { FinishUpdateParams } from "./update-command-finish-types.js";
+import { finishUpdate } from "./update-command-post-update.js";
 
 type RuntimeRefreshMocks = {
   readService: Mock<typeof import("../../daemon/service.js").readGatewayServiceState>;
