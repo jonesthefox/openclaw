@@ -1,5 +1,6 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
+import { createRequire } from "node:module";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -33,6 +34,11 @@ import {
 } from "./undici-global-dispatcher.js";
 import * as undiciRuntime from "./undici-runtime.js";
 import { createHttp1EnvHttpProxyAgent, createHttp1ProxyAgent } from "./undici-runtime.js";
+
+// Undici exposes its deadline clock for tests; network I/O stays real.
+const undiciTimers: { tick: (delay: number) => void } = createRequire(import.meta.url)(
+  "undici/lib/util/timers.js",
+);
 
 const TARGET_URL = `https://${TARGET_HOST}/media`;
 
@@ -210,8 +216,8 @@ describe("SOCKS proxy protocol boundaries", () => {
     },
   );
 
-  // Each row owns its server, sockets, and dispatcher, so native deadline waits can overlap.
-  it.concurrent.each([
+  // The dispatchers share Undici's clock, so each handshake must settle before the next row.
+  it.each([
     { name: "fixed target", mode: "fixed", stall: "target", target: 100, proxy: 0 },
     { name: "environment target", mode: "environment", stall: "target", target: 100, proxy: 0 },
     {
@@ -326,8 +332,10 @@ describe("SOCKS proxy protocol boundaries", () => {
       const server = stall === "proxy" ? net.createServer() : http.createServer();
       const sockets = new Set<net.Socket>();
       let sawTlsHandshake = false;
+      const handshake = Promise.withResolvers<void>();
       const observeTls = (chunk: Buffer) => {
         sawTlsHandshake = chunk[0] === 22;
+        handshake.resolve();
       };
       server.on("connection", (socket: net.Socket) => {
         sockets.add(socket);
@@ -378,13 +386,28 @@ describe("SOCKS proxy protocol boundaries", () => {
           // @ts-expect-error Undici's Node TLS intersection rejects its runtime-valid null timeout.
           dispatcher = createHttp1ProxyAgent({ ...options, uri }, budget);
         }
-        const outcome = await undiciFetch(TARGET_URL, {
+        const outcome = undiciFetch(TARGET_URL, {
           dispatcher,
           // Undici's explicit null/undefined timeout contract uses its 10-second default.
           signal: AbortSignal.timeout(defaultProxyTimeout ? 12_000 : 2_000),
         }).catch((error: unknown) => error);
+        await Promise.race([
+          handshake.promise,
+          outcome.then((result) => {
+            throw new Error("Proxy request settled before its TLS handshake", { cause: result });
+          }),
+        ]);
+        const deadlineMs = defaultProxyTimeout ? 10_000 : 100;
+        // First initialize pending FastTimers, then expire the unchanged connector deadline.
+        undiciTimers.tick(0);
+        undiciTimers.tick(deadlineMs);
         expect(sawTlsHandshake).toBe(true);
-        expect(outcome).toMatchObject({ cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
+        expect(await outcome).toMatchObject({
+          cause: {
+            code: "UND_ERR_CONNECT_TIMEOUT",
+            message: expect.stringContaining(`timeout: ${deadlineMs}ms`),
+          },
+        });
       } finally {
         for (const socket of sockets) {
           socket.destroy();
