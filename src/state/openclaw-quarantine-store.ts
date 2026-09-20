@@ -196,6 +196,23 @@ export function readOpenClawDatabaseQuarantine(
   }
 }
 
+/** Runtime opens refuse recorded damage while tolerating a broken quarantine index. */
+export function readOpenClawDatabaseQuarantineFailure(
+  kind: OpenClawDatabaseKind,
+  pathname: string,
+  options: { env?: NodeJS.ProcessEnv } = {},
+): Error | undefined {
+  try {
+    const quarantine = readOpenClawDatabaseQuarantine(pathname, options);
+    return quarantine
+      ? createOpenClawDatabaseVerificationError(kind, pathname, quarantine.reason)
+      : undefined;
+  } catch {
+    // The process latch and daily verifier still cover known damage.
+    return undefined;
+  }
+}
+
 /** Persist one authoritative quarantine decision. */
 export function recordOpenClawDatabaseQuarantine(options: {
   env?: NodeJS.ProcessEnv;

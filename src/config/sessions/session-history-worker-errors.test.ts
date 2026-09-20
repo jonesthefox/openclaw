@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { WorkerTaskError } from "../../infra/worker-task-pool.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { SessionMetadataUnavailableError } from "../../state/session-metadata-unavailable-error.js";
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence.js";
@@ -114,6 +115,27 @@ function invoke(request: ReturnType<typeof input>) {
   return Promise.resolve(observed.handler(request));
 }
 
+async function readThroughWorker() {
+  const request = input();
+  observed.run.mockImplementation(async () => {
+    const posted = createDeferredCore<unknown>();
+    observed.post.mockImplementation(posted.resolve);
+    assert(observed.receive);
+    observed.receive({ input: request, taskId: 7, nativeSections: new SharedArrayBuffer(4) });
+    const reply = await posted.promise;
+    assert(reply && typeof reply === "object" && "status" in reply);
+    if (reply.status === "failed") {
+      assert("error" in reply && typeof reply.error === "string");
+      throw new WorkerTaskError(reply.error, "failed");
+    }
+    assert(reply.status === "ok" && "value" in reply);
+    return structuredClone(reply.value);
+  });
+  return await withSessionHistoryWorkerDatabase(request.database, (owner) =>
+    owner.readEntryPresence(request.scope),
+  );
+}
+
 beforeEach(() => {
   observed.post.mockReset();
   observed.read.mockReset();
@@ -128,16 +150,16 @@ afterEach(async () => {
   expect(observed.nativeWorker).not.toHaveBeenCalled();
 });
 
-it("preserves the original worker read error when closing succeeds", async () => {
+it("preserves the worker read failure through transfer when closing succeeds", async () => {
   const primary = new Error("read failed");
   observed.read.mockImplementation(() => {
     throw primary;
   });
-  await expect(invoke(input())).rejects.toBe(primary);
+  await expect(readThroughWorker()).rejects.toMatchObject({ message: primary.message });
   expect(observed.close).toHaveBeenCalledTimes(1);
 });
 
-it("retains both worker errors locally when the read and close fail", async () => {
+it("retains both worker errors through transfer when the read and close fail", async () => {
   const primary = new Error("read failed");
   const cleanup = new Error("database close failed");
   observed.read.mockImplementation(() => {
@@ -146,10 +168,13 @@ it("retains both worker errors locally when the read and close fail", async () =
   observed.close.mockImplementation(() => {
     throw cleanup;
   });
-  const failure: unknown = await invoke(input()).catch((error: unknown) => error);
+  const failure: unknown = await readThroughWorker().catch((error: unknown) => error);
   assert(failure instanceof AggregateError);
-  expect(failure.errors).toEqual([primary, cleanup]);
-  expect(failure.cause).toBe(cleanup);
+  expect(failure.errors).toMatchObject([
+    { message: primary.message },
+    { message: cleanup.message },
+  ]);
+  expect(failure.cause).toBe(failure.errors[1]);
   expect(failure.message).toContain(primary.message);
   expect(failure.message).toContain(cleanup.message);
 });
@@ -188,33 +213,50 @@ it.each(typedFailures)(
     observed.close.mockImplementation(() => {
       throw cleanup;
     });
-    const failure: unknown = await invoke(input()).catch((caught: unknown) => caught);
+    const failure: unknown = await readThroughWorker().catch((caught: unknown) => caught);
     assert(failure instanceof AggregateError);
-    expect(failure.errors).toEqual([error, cleanup]);
+    expect(failure.errors).toMatchObject([
+      { name: error.name, message: error.message },
+      { message: cleanup.message },
+    ]);
+    expect(failure.cause).toBe(failure.errors[1]);
   },
 );
 
-it("carries both failure messages through the existing worker response", async () => {
-  const primary = new Error("primary read detail");
-  const cleanup = new Error("close detail");
-  observed.read.mockImplementation(() => {
-    throw primary;
-  });
-  observed.close.mockImplementation(() => {
-    throw cleanup;
-  });
-  const posted = createDeferredCore<unknown>();
-  observed.post.mockImplementation(posted.resolve);
-  assert(observed.receive);
-  observed.receive({ input: input(), taskId: 7, nativeSections: new SharedArrayBuffer(4) });
-  const reply = await posted.promise;
-  expect(reply).toEqual({
-    status: "failed",
-    taskId: 7,
-    error: expect.stringContaining(primary.message),
-  });
-  expect(reply).toMatchObject({ error: expect.stringContaining(cleanup.message) });
-});
+it.each([false, true])(
+  "retains typed metadata refusal and SQLite cause across worker transfer with cleanup failure=%s",
+  async (fails) => {
+    const cause = Object.assign(new Error("synthetic SQLite read failure"), {
+      code: "ERR_SQLITE_ERROR",
+      errcode: 1,
+    });
+    const primary = new SessionMetadataUnavailableError("table-missing", { cause }, [
+      "transcript_events",
+    ]);
+    const cleanup = new Error("synthetic database close failure");
+    observed.read.mockImplementation(() => {
+      throw primary;
+    });
+    if (fails) {
+      observed.close.mockImplementation(() => {
+        throw cleanup;
+      });
+    }
+    const failure: unknown = await readThroughWorker().catch((error: unknown) => error);
+    const unavailable: unknown = failure instanceof AggregateError ? failure.errors[0] : failure;
+    expect(unavailable).toBeInstanceOf(SessionMetadataUnavailableError);
+    expect(unavailable).toMatchObject({
+      reason: "table-missing",
+      missingTables: ["transcript_events"],
+      cause: { message: cause.message, code: "ERR_SQLITE_ERROR", errcode: 1 },
+    });
+    if (fails) {
+      assert(failure instanceof AggregateError);
+      expect(failure.errors[1]).toMatchObject({ message: cleanup.message });
+      expect(failure.cause).toBe(failure.errors[1]);
+    }
+  },
+);
 
 it.each([false, true])(
   "awaits retirement and preserves both failures when retirement fails=%s",

@@ -51,6 +51,7 @@ import type { TaskRegistryWorkerOperations } from "../tasks/task-registry.worker
 import type { TranscriptReadOperations } from "../transcripts/store-worker-contract.js";
 import type { AgentProvenance } from "./agent-provenance.types.js";
 import type { PreparedBackupRunRecord } from "./backup-run-records.kernel.js";
+import type { OpenClawRegisteredAgentDatabase } from "./openclaw-agent-db-contract.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-lease.js";
 import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease-store.js";
 import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
@@ -73,6 +74,7 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   DeliveryQueueWorkerOperations &
   TranscriptReadOperations &
   TaskRegistryWorkerOperations & {
+    "agentDatabases.list": { input: undefined; output: OpenClawRegisteredAgentDatabase[] };
     "skillUploads.commit": {
       input: Parameters<typeof commitSkillUploadInDatabase>[0];
       output: ReturnType<typeof commitSkillUploadInDatabase>;

@@ -18,6 +18,7 @@ import type {
   SessionMembersWorkerInput,
   SessionRowPresenceWorkerInput,
   SessionTranscriptHistoryWorkerInput,
+  SessionTranscriptHydrationWorkerInput,
   SessionTranscriptWorkerReply,
   SessionUsageCacheWorkerInput,
 } from "./session-transcript-worker.types.js";
@@ -28,13 +29,15 @@ export const historyPages = new WorkerTaskPool<
   | SessionRowPresenceWorkerInput
   | SessionMembersWorkerInput
   | SessionEntryListWorkerInput
-  | SessionUsageCacheWorkerInput,
+  | SessionUsageCacheWorkerInput
+  | SessionTranscriptHydrationWorkerInput,
   SessionTranscriptWorkerReply<
     | "history-page"
     | "session-row-presence"
     | "session-members"
     | "session-entry-list"
     | "usage-cache"
+    | "transcript-hydration"
   >
 >({
   workerUrl,

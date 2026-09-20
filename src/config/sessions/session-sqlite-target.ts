@@ -10,9 +10,10 @@ import {
   inspectOpenClawAgentDatabaseOwner,
   isIncognitoOpenClawAgentSqlitePath,
 } from "../../state/openclaw-agent-db.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 
 /** SQLite database target resolved from a legacy session store path. */
-type ResolvedSqliteStoreTarget = {
+export type ResolvedSqliteStoreTarget = {
   agentId?: string;
   ownerSource?:
     | "database-registry"
@@ -33,6 +34,48 @@ type ResolveSqliteStoreTargetOptions = {
   registeredDatabases?: readonly Pick<OpenClawRegisteredAgentDatabase, "agentId" | "path">[];
   isSameDatabasePath?: (left: string, right: string) => boolean;
 };
+
+/** Resolve physical ownership before the transcript reader acquires database custody. */
+export async function prepareSqliteTargetFromSessionStorePath(
+  storePath: string,
+  options: Pick<ResolveSqliteStoreTargetOptions, "agentId" | "defaultAgentId" | "env"> = {},
+  signal?: AbortSignal,
+): Promise<ResolvedSqliteStoreTarget> {
+  signal?.throwIfAborted();
+  const pathname = path.resolve(storePath);
+  const unsuffixed = resolveUnsuffixedSqliteTargetFromSessionStorePath(pathname);
+  if (unsuffixed.agentId) {
+    return unsuffixed;
+  }
+  const context = captureOpenClawStateWorkerContext(options);
+  const input = {
+    storePath: pathname,
+    agentId: options.agentId,
+    defaultAgentId: options.defaultAgentId,
+    env: context.environment,
+  };
+  signal?.throwIfAborted();
+  const { runOpenClawStateWorkerOperation } =
+    await import("../../state/openclaw-state-worker-store.js");
+  const registeredDatabases = await runOpenClawStateWorkerOperation(
+    context,
+    (owner) => owner.execute({ type: "agentDatabases.list", input: undefined }),
+    { existingOnly: true, assertCurrent: () => signal?.throwIfAborted() },
+  );
+  context.admission.assertCurrent();
+  signal?.throwIfAborted();
+  const { resolveSessionSqliteTargetInWorker } =
+    await import("./session-transcript-read-worker-runtime.js");
+  try {
+    return await resolveSessionSqliteTargetInWorker(
+      { ...input, registeredDatabases: registeredDatabases ?? [] },
+      signal,
+    );
+  } finally {
+    context.admission.assertCurrent();
+    signal?.throwIfAborted();
+  }
+}
 
 function resolveRegisteredOwners(
   pathname: string,
