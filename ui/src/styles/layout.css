@@ -3934,67 +3934,93 @@ openclaw-tooltip.sidebar-hover-tooltip {
   background: var(--ok);
 }
 
-.sidebar-footer-bar__status {
+/* One lifecycle label is shared by the identity subtitle, Settings, and collapsed navigation. */
+.gateway-status-tooltip {
   display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.gateway-status {
+  display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
-  flex: none;
-  padding: 3px 7px;
-  border: none;
-  border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
-  cursor: var(--cursor-action);
+  gap: 2px 7px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
   font-family: inherit;
   font-size: var(--control-ui-text-xs);
-  font-weight: 600;
-  line-height: 1;
+  font-weight: 400;
+  line-height: 1.4;
+  text-align: start;
 }
 
-.sidebar-footer-bar__status:hover {
-  background: color-mix(in srgb, var(--danger) 18%, transparent);
+button.gateway-status {
+  cursor: var(--cursor-action);
 }
 
-.sidebar-footer-bar__status--restarting,
-.sidebar-footer-bar__status--restarting:hover,
-.sidebar-footer-bar__status--suspending,
-.sidebar-footer-bar__status--suspending:hover,
-.sidebar-footer-bar__status--suspended,
-.sidebar-footer-bar__status--suspended:hover {
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  color: var(--warn);
-  cursor: default;
+button.gateway-status:hover {
+  color: var(--text);
 }
 
-.sidebar-footer-bar__status:focus-visible {
-  outline: none;
+button.gateway-status:focus-visible {
+  border-radius: var(--radius-sm);
   box-shadow: var(--focus-ring);
 }
 
-.sidebar-footer-bar__status-detail {
-  font-size: calc(10px * var(--control-ui-text-scale));
-  font-weight: 500;
-  opacity: 0.72;
+.gateway-status__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
 }
 
-.sidebar-footer-bar__status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-full);
-  background: var(--danger);
+.gateway-status__icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--warn);
 }
 
-.sidebar-footer-bar__status--restarting .sidebar-footer-bar__status-dot,
-.sidebar-footer-bar__status--suspending .sidebar-footer-bar__status-dot,
-.sidebar-footer-bar__status--suspended .sidebar-footer-bar__status-dot {
-  background: var(--warn);
+.gateway-status__icon svg {
+  width: 12px;
+  height: 12px;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .sidebar-footer-bar__status--restarting .sidebar-footer-bar__status-dot,
-  .sidebar-footer-bar__status--suspending .sidebar-footer-bar__status-dot {
-    animation: pulse-subtle 1.2s ease-in-out infinite;
-  }
+.gateway-status__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gateway-status__outbox {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.gateway-status--offline .gateway-status__icon {
+  color: var(--danger);
+}
+
+.gateway-status--connecting .gateway-status__icon,
+.gateway-status--starting .gateway-status__icon,
+.gateway-status--restoring .gateway-status__icon {
+  color: var(--muted);
+}
+
+.shell-connection-status {
+  position: absolute;
+  inset-block-end: 12px;
+  inset-inline-start: 12px;
+  z-index: 40;
+  max-width: calc(100% - 80px);
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
 }
 
 .sidebar-session-group-running {

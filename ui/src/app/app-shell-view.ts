@@ -2,6 +2,7 @@ import { html, nothing } from "lit";
 import { isSettingsNavigationRoute, isSettingsTakeover } from "../app-navigation.ts";
 import { isSessionRouteId } from "../app-route-paths.ts";
 import { isRouteId, type RouteId } from "../app-routes.ts";
+import { renderGatewayStatus } from "../components/gateway-status.ts";
 import { icons } from "../components/icons.ts";
 import { renderConnectingSplash } from "../components/loading-skeleton.ts";
 import { renderNewSessionLink } from "../components/new-session-link.ts";
@@ -9,6 +10,7 @@ import { renderLazySettingsSidebar } from "../components/settings-sidebar-lazy.t
 import type { ThemeModeChangeDetail } from "../components/theme-mode-toggle.ts";
 import { t } from "../i18n/index.ts";
 import { canCallGatewayMethod } from "../lib/gateway-methods.ts";
+import { resolveGatewayStatus } from "../lib/gateway-status.ts";
 import {
   formatKeyboardShortcutCombo,
   KEYBOARD_SHORTCUT_COMBOS,
@@ -112,6 +114,7 @@ export function renderApplicationShell(host: ShellViewHost) {
   const navigationSnapshot = context.navigation.snapshot;
   const overlaySnapshot = context.overlays.snapshot;
   const controlUiRefreshRequired = overlaySnapshot.controlUiRefreshRequired;
+  const connectionStatus = resolveGatewayStatus(gatewaySnapshot, controlUiRefreshRequired);
   // The install keeps running after `update.run` answers, so the reconciliation
   // — not the request — decides how long the update surfaces stay busy.
   const updateBusy = overlaySnapshot.updateRunning || overlaySnapshot.updateReconciliationPending;
@@ -240,9 +243,7 @@ export function renderApplicationShell(host: ShellViewHost) {
       enabledRouteIds: host.enabledRouteIds(),
       sessionKey: host.activeSessionKey,
       connected: gatewayConnected,
-      offline: gatewaySnapshot.offlineStable,
-      restartPending: gatewaySnapshot.restartPending === true,
-      suspensionPhase: gatewaySnapshot.suspensionPhase,
+      connectionStatus,
       queuedOutboxCount: storedOutboxes?.total ?? 0,
       lastError: gatewaySnapshot.lastError,
       outboxAttentionCountForSession: storedOutboxes?.attentionCountForSession ?? (() => 0),
@@ -286,10 +287,7 @@ export function renderApplicationShell(host: ShellViewHost) {
           activePathname: host.routeState.location?.pathname ?? "",
           activeSearch: host.routeState.location?.search ?? "",
           activeHash: host.routeState.location?.hash ?? "",
-          offline: gatewaySnapshot.offlineStable,
-          phase: gatewaySnapshot.phase,
-          restartPending: gatewaySnapshot.restartPending,
-          suspensionPhase: gatewaySnapshot.suspensionPhase,
+          connectionStatus,
           queuedOutboxCount: storedOutboxes?.total ?? 0,
           lastError: gatewaySnapshot.lastError,
           gatewayVersion: config.serverVersion ?? gatewaySnapshot.hello?.server?.version ?? "",
@@ -552,6 +550,21 @@ export function renderApplicationShell(host: ShellViewHost) {
           .notFoundRecoveryReady=${gatewayConnected}
         ></openclaw-router-outlet>
       </main>
+      ${
+        navigationSurfaceHidden &&
+        !nativeEmbed &&
+        !onboarding &&
+        (connectionStatus || storedOutboxes?.total)
+          ? html`<div class="shell-connection-status">
+              ${renderGatewayStatus({
+                kind: connectionStatus,
+                queuedOutboxCount: storedOutboxes?.total,
+                lastError: gatewaySnapshot.lastError,
+                onRetry: () => context.gateway.connect(),
+              })}
+            </div>`
+          : nothing
+      }
       <openclaw-terminal-panel
         ?inert=${navDrawerOpen}
         .client=${gatewayConnected ? gatewaySnapshot.client : null}

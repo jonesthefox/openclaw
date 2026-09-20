@@ -19,7 +19,6 @@ import {
 import { pathForRoute, type RouteId } from "../app-route-paths.ts";
 import type { AgentSelectionCapability } from "../app/agent-selection.ts";
 import type { ApplicationNavigationOptions } from "../app/context.ts";
-import type { ApplicationGatewaySnapshot } from "../app/gateway.ts";
 import type { NativeDeviceSettingsCapability } from "../app/native-device-settings.ts";
 import { beginNativeWindowDragFromTopInset } from "../app/native-window-drag.ts";
 import type { UpdateProgress } from "../app/update-confirmation.ts";
@@ -27,15 +26,12 @@ import type { ApplicationStatusBanner } from "../app/update-overlay-helpers.ts";
 import { t } from "../i18n/index.ts";
 import { listSelectableAgents, normalizeAgentLabel } from "../lib/agents/display.ts";
 import type { AgentIdentityCapability } from "../lib/agents/identity.ts";
-import { redactLoginFailureError } from "../lib/connection-hints.ts";
+import type { GatewayStatus } from "../lib/gateway-status.ts";
 import { shouldHandleNavigationClick } from "../lib/navigation-click.ts";
 import { normalizeAgentId } from "../lib/sessions/session-key.ts";
 import { findSettingsSearchBlocks } from "../pages/config/settings-search.ts";
+import { renderGatewayStatus } from "./gateway-status.ts";
 import { icons } from "./icons.ts";
-import {
-  renderSidebarConnectionStatus,
-  resolveSidebarConnectionStatus,
-} from "./session-row-badges.ts";
 import type { SettingsSaveIndicatorProps } from "./settings-save-indicator.ts";
 import "./agent-select-registration.ts";
 import "./settings-save-indicator.ts";
@@ -54,10 +50,7 @@ type SettingsSidebarProps = {
   activePathname?: string;
   activeSearch?: string;
   activeHash?: string;
-  offline: boolean;
-  phase?: ApplicationGatewaySnapshot["phase"];
-  restartPending?: boolean;
-  suspensionPhase?: ApplicationGatewaySnapshot["suspensionPhase"];
+  connectionStatus: GatewayStatus | null;
   queuedOutboxCount?: number;
   lastError: string | null;
   gatewayVersion: string;
@@ -333,7 +326,6 @@ function renderSettingsAgentSelector(props: SettingsSidebarProps) {
 }
 
 function renderEmbeddedSettingsHeader(props: SettingsSidebarProps) {
-  const connectionStatus = resolveSidebarConnectionStatus(props);
   return html`<header class="native-embed-header">
     ${
       props.presentation === "embed-page"
@@ -351,18 +343,21 @@ function renderEmbeddedSettingsHeader(props: SettingsSidebarProps) {
       ${props.presentation === "embed-list" ? t("nav.settings") : settingsNavigationLabelForRoute(props.activeRouteId, props.nativeDeviceSettings?.snapshot)}
     </h1>
     ${
-      connectionStatus
-        ? renderSidebarConnectionStatus({
-            kind: connectionStatus,
+      props.connectionStatus !== null || (props.queuedOutboxCount ?? 0) > 0
+        ? renderGatewayStatus({
+            kind: props.connectionStatus,
             queuedOutboxCount: props.queuedOutboxCount ?? 0,
-            title: props.lastError
-              ? redactLoginFailureError(props.lastError)
-              : t("connection.reconnecting"),
+            lastError: props.lastError,
             onRetry: props.onRetryConnect,
           })
-        : html`<openclaw-settings-save-indicator
+        : nothing
+    }
+    ${
+      props.connectionStatus === null
+        ? html`<openclaw-settings-save-indicator
             .props=${props.saveIndicator}
           ></openclaw-settings-save-indicator>`
+        : nothing
     }
   </header>`;
 }
@@ -371,8 +366,6 @@ export function renderSettingsSidebar(props: SettingsSidebarProps) {
   if (props.presentation === "embed-page") {
     return html`${renderEmbeddedSettingsHeader(props)} ${renderSettingsAgentSelector(props)}`;
   }
-  const connectionStatus = resolveSidebarConnectionStatus(props);
-  const reconnecting = t("connection.reconnecting");
   const searchBlockMatches =
     props.searchBlockMatches ??
     (props.searchParams ? findSettingsSearchBlocks(props.searchParams) : []);
@@ -475,16 +468,21 @@ export function renderSettingsSidebar(props: SettingsSidebarProps) {
       ${navigation}
       <footer class="settings-sidebar__footer">
         ${
-          connectionStatus
-            ? renderSidebarConnectionStatus({
-                kind: connectionStatus,
+          props.connectionStatus !== null || (props.queuedOutboxCount ?? 0) > 0
+            ? renderGatewayStatus({
+                kind: props.connectionStatus,
                 queuedOutboxCount: props.queuedOutboxCount ?? 0,
-                title: props.lastError ? redactLoginFailureError(props.lastError) : reconnecting,
+                lastError: props.lastError,
                 onRetry: props.onRetryConnect,
               })
-            : html`<openclaw-settings-save-indicator
+            : nothing
+        }
+        ${
+          props.connectionStatus === null
+            ? html`<openclaw-settings-save-indicator
                 .props=${props.saveIndicator}
               ></openclaw-settings-save-indicator>`
+            : nothing
         }
         <openclaw-sidebar-build-chip
           .basePath=${props.basePath}
