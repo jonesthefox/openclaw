@@ -48,7 +48,8 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
-import { captureTaskRegistryReadFence } from "../../tasks/task-registry-listener-state.js";
+import * as taskRegistryListener from "../../tasks/task-registry-listener-state.js";
+import { getTaskRegistryStore } from "../../tasks/task-registry.store.js";
 import { resetTaskRegistryForTests } from "../../tasks/task-registry.test-support.js";
 import { findTaskByRunIdForStatus } from "../../tasks/task-status-access.js";
 import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
@@ -147,9 +148,7 @@ function registerCollector(id: string, childSessionKey = key, agentId = "main") 
 }
 
 afterEach(async () => {
-  // Join this fixture's accepted native writes before restoring event dependencies.
-  // The residual-root assertion below still detects unowned or unsettled tails.
-  await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
+  await settleSubagentRegistryPersistenceWork();
   vi.restoreAllMocks();
   restoreRegisteredAgentHarnesses(harnesses);
   await cleanupSubagentRegistryPersistenceTest({
@@ -334,15 +333,30 @@ async function settleCollectorCleanup(id: string) {
 
 test("same-turn reset keeps its active continuation and task unsuppressed", async () => {
   const activeId = "active-continuation";
-  startCollector(activeId);
-  const interrupt = vi.fn();
-  const admission = await beginSessionWorkAdmission({
-    scope: resolveSessionStorePathCore(undefined, { agentId: "main" }),
-    identities: [key, "reset-cleanup-session"],
-    assertAllowed: () => {},
-    onInterrupt: interrupt,
+  const snapshotReady = createDeferredCore();
+  const releaseSnapshot = createDeferredCore();
+  const store = getTaskRegistryStore();
+  const readSnapshot = store.loadMutationSnapshotAsync.bind(store);
+  vi.spyOn(store, "loadMutationSnapshotAsync").mockImplementation(async (...args) => {
+    const snapshot = await readSnapshot(...args);
+    if (args[1]?.runId === activeId) {
+      snapshotReady.resolve();
+      await releaseSnapshot.promise;
+    }
+    return snapshot;
   });
+  const readFence = taskRegistryListener.captureTaskRegistryReadFence;
+  const interrupt = vi.fn();
+  let admission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
   try {
+    startCollector(activeId);
+    await snapshotReady.promise;
+    admission = await beginSessionWorkAdmission({
+      scope: resolveSessionStorePathCore(undefined, { agentId: "main" }),
+      identities: [key, "reset-cleanup-session"],
+      assertAllowed: () => {},
+      onInterrupt: interrupt,
+    });
     await admission.run(() => request("sessions.reset", { key }));
     expect(admission.isActive()).toBe(true);
     expect(interrupt).not.toHaveBeenCalled();
@@ -354,8 +368,17 @@ test("same-turn reset keeps its active continuation and task unsuppressed", asyn
     expect(loadSubagentRegistryFromSqlite().get(runId)?.execution.suppressSessionEffects).toBe(
       true,
     );
+    // Keep the accepted event's publication pending across reset until settlement joins it.
+    vi.spyOn(taskRegistryListener, "captureTaskRegistryReadFence").mockImplementation((owner) => {
+      const settled = readFence(owner);
+      releaseSnapshot.resolve();
+      return settled;
+    });
+    await settleSubagentRegistryPersistenceWork();
   } finally {
-    admission.release();
+    releaseSnapshot.resolve();
+    admission?.release();
+    await readFence(captureOpenClawStateWorkerContext().admission);
   }
 });
 
