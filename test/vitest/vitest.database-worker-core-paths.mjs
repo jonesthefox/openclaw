@@ -3,6 +3,12 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/cli-runner.prepare-fixture.test.ts",
   "src/agents/harness/selection.test.ts",
   "src/agents/cli-runner/prepare.test.ts",
+  "src/agents/embedded-agent-runner/run.prepared-harness-source-delivery.integration.test.ts",
+  "src/agents/embedded-agent-runner/run.shared-integration.test.ts",
+  "src/auto-reply/dispatch.block-streaming-recovery.test.ts",
+  "src/auto-reply/reply/agent-runner-execution-cli-commentary.test.ts",
+  "src/auto-reply/reply/agent-runner-memory.private-transcript.test.ts",
+  "src/auto-reply/reply/agent-runner-required-maintenance.pending-input.test.ts",
   "src/agents/worktrees/empty-source.test.ts",
   "src/agents/worktrees/registry-read.test.ts",
   "src/agents/worktrees/service-branches.test.ts",
@@ -247,6 +253,7 @@ const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
 
 // Preserve watch admission for consumers previously inferred into fast lanes.
 export const databaseWorkerCoreFormerFastKinds = new Map([
+  ["src/auto-reply/reply/agent-runner-memory.private-transcript.test.ts", "unitFast"],
   ["src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts", "unitFast"],
   ["src/infra/device-pairing.test.ts", "unitFast"],
   ["src/logging/diagnostic-stuck-session-recovery.runtime.test.ts", "unitFast"],
