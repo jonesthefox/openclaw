@@ -1713,14 +1713,14 @@ openclaw-chat-video-player {
 }
 
 .task-suggestion__summary {
-  display: -webkit-box;
+  /* Show the requested one or two sentences; bound only unusually verbose output. */
+  max-height: 16lh;
   margin-top: 6px;
-  overflow: hidden;
+  overflow: auto;
+  overflow-wrap: anywhere;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.35;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
 }
 
 .task-suggestion__instructions {
