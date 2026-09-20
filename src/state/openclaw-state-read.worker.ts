@@ -1,5 +1,6 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/workspace-state-store.kernel.js";
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
@@ -38,6 +39,8 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     typeof coordinatorRuntime.directory === "string" &&
     typeof coordinatorRuntime.keepAlive === "boolean" &&
     (input.command.type === "admit" ||
+      (input.command.type === "workspace.snapshot" &&
+        typeof input.command.workspaceDir === "string") ||
       (input.command.type === "userProfiles.avatar.reconcile" &&
         typeof input.command.profileId === "string") ||
       (input.command.type === "audit.run.inspect" &&
@@ -72,6 +75,17 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
         return withOpenClawStateReadOnlyLocation(
           ({ db }) => {
             sourceAdmitted = true;
+            if (command.type === "workspace.snapshot") {
+              return {
+                ok: true,
+                type: command.type,
+                sourceAdmitted,
+                snapshot: readWorkspaceStateSnapshotForDirectoryInDatabase({
+                  workspaceDir: command.workspaceDir,
+                  database: { db, path: input.databasePath },
+                }),
+              };
+            }
             if (command.type === "audit.run.inspect") {
               try {
                 return {
