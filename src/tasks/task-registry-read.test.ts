@@ -39,7 +39,7 @@ import {
   listFreshTasksForOwnerKey,
 } from "./task-registry-query.js";
 import { prepareTaskRegistryRead } from "./task-registry-read.js";
-import { linkTaskToFlowById } from "./task-registry-record-api.js";
+import { finalizeTaskRecordByRunId, linkTaskToFlowById } from "./task-registry-record-api.js";
 import { tasks, taskProgressBatches } from "./task-registry-state.js";
 import { getTaskRegistryStore, onTaskRegistryChange } from "./task-registry.store.js";
 import { loadTaskRegistryStateFromSqliteReadOnly } from "./task-registry.store.sqlite.js";
@@ -169,6 +169,67 @@ function createReadProgressBatch() {
 }
 
 describe("task registry read preparation", () => {
+  it.each(["before readback", "during readback"] as const)(
+    "keeps the read fence settled when native completion supersedes progress %s",
+    async (phase) => {
+      await withReadState(async () => {
+        const task = createReadTask(`completion-during-progress-${phase}`);
+        const store = getTaskRegistryStore();
+        const mutate = store.runAgentEventMutationAsync.bind(store);
+        const snapshot = store.loadMutationSnapshotAsync.bind(store);
+        let committed = false;
+        let completed = false;
+        const published: string[] = [];
+        const stop = onTaskRegistryChange(() => {
+          const current = tasks.get(task.taskId);
+          if (current) {
+            published.push(current.status);
+          }
+        });
+        const complete = () => {
+          completed = true;
+          expect(
+            finalizeTaskRecordByRunId({
+              runId: task.runId!,
+              status: "succeeded",
+              endedAt: Date.now(),
+            }),
+          ).toMatchObject([{ taskId: task.taskId, status: "succeeded", toolUseCount: 1 }]);
+        };
+        const writes = vi
+          .spyOn(store, "runAgentEventMutationAsync")
+          .mockImplementation(async (...args) => {
+            const receipt = await mutate(...args);
+            committed = true;
+            if (phase === "before readback") {
+              complete();
+            }
+            return receipt;
+          });
+        vi.spyOn(store, "loadMutationSnapshotAsync").mockImplementation(async (...args) => {
+          const result = await snapshot(...args);
+          if (committed && !completed && phase === "during readback") {
+            complete();
+          }
+          return result;
+        });
+        try {
+          emitTool(task.runId!, "accepted-progress");
+          const read = expectDefined(await prepareTaskRegistryRead(), "read after completion");
+          expect(read.getTaskById(task.taskId)).toMatchObject({
+            status: "succeeded",
+            toolUseCount: 1,
+            lastToolName: "accepted-progress",
+          });
+          expect(writes).toHaveBeenCalledOnce();
+          expect(published).toEqual(["succeeded"]);
+        } finally {
+          stop();
+        }
+      });
+    },
+  );
+
   it.each(["normalized start", "terminal"] as const)(
     "accepts later events after native %s rollback without an intervening refresh",
     async (phase) => {

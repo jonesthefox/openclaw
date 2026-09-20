@@ -69,7 +69,9 @@ export function createTaskRegistryPublicationRecovery(
   const witness = { writtenTaskIds: new Set<string>(), replaced: false };
   pending.recoveryWitness = witness;
   let expected: TaskRecord | undefined;
+  let supersededError: Error | undefined;
   return {
+    isSuperseded: (error: unknown) => supersededError !== undefined && error === supersededError,
     begin() {
       witness.writtenTaskIds.clear();
       witness.replaced = false;
@@ -89,7 +91,7 @@ export function createTaskRegistryPublicationRecovery(
         !current ||
         !isEquivalentTaskRecord(current, expected)
       ) {
-        throw new Error("Task publication was superseded by a current write");
+        throw (supersededError ??= new Error("Task publication was superseded by a current write"));
       }
     },
   };
