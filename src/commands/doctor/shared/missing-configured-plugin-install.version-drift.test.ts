@@ -112,14 +112,22 @@ function createDriftedInstalls({
   mocks.installPluginFromNpmSpec.mockImplementation(
     async ({ spec, expectedPluginId }: { spec: string; expectedPluginId: string }) => {
       const parsed = parseRegistryNpmSpec(spec);
-      if (!parsed || parsed.selectorKind !== "exact-version") {
-        throw new Error(`Expected an exact plugin target, received ${spec}`);
+      if (!parsed) {
+        throw new Error(`Invalid plugin target: ${spec}`);
       }
+      const version = parsed.selectorKind === "exact-version" ? parsed.selector : "2026.9.6";
+      const targetDir = expectDefined(
+        records[expectedPluginId],
+        "installed plugin fixture",
+      ).installPath;
+      const manifestPath = path.join(expectDefined(targetDir, "fixture path"), "package.json");
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, version }));
       return successfulInstall({
         pluginId: expectedPluginId,
         npmSpec: parsed.name,
-        version: parsed.selector,
-        targetDir: expectDefined(records[expectedPluginId], "installed plugin fixture").installPath,
+        version,
+        targetDir,
       });
     },
   );
@@ -152,6 +160,65 @@ describe("Doctor official plugin version repair", () => {
         metadata: { name: parsed.name, version, resolvedSpec: `${parsed.name}@${version}` },
       };
     });
+  });
+
+  describe.each(["Doctor repair", "core-update convergence"])("%s selector policy", (caller) => {
+    it.each([
+      ["next", oldVersion, coreVersion, "2026.9.6"],
+      ["beta", oldVersion, coreVersion, "2026.9.6"],
+      ["2026.9.6", "2026.9.6", coreVersion, "2026.9.6"],
+      ["2026.9.5-1", oldVersion, "2026.9.5-2", "2026.9.5-1"],
+    ])(
+      "honors @%s over the cohort with installed %s and core %s",
+      async (selector, installedVersion, hostVersion, expectedVersion) => {
+        const { cfg, env, records } = createDriftedInstalls({
+          hostVersion,
+          installedVersion,
+          packages: [["discord", "@openclaw/discord"]],
+        });
+        const spec = `@openclaw/discord@${selector}`;
+        const record = expectDefined(records.discord, "discord install");
+        record.spec = spec;
+        const updatedRecords =
+          caller === "Doctor repair"
+            ? (
+                await repairMissingConfiguredPluginInstalls({
+                  cfg,
+                  env,
+                  repairVersionDrift: true,
+                  baselineRecords: records,
+                })
+              ).records
+            : (
+                await convergePluginReleaseCohort({
+                  config: { ...cfg, plugins: { ...cfg.plugins, installs: records } },
+                  env,
+                  channel: "stable",
+                  coreVersion: hostVersion,
+                  timeoutMs: 60_000,
+                })
+              ).config.plugins?.installs;
+
+        expect(mocks.resolveNpmSpecMetadata.mock.calls[0]?.[0].spec).toBe(spec);
+        expect(updatedRecords?.discord).toMatchObject({
+          spec,
+          version: expectedVersion,
+          resolvedVersion: expectedVersion,
+          resolvedSpec: `@openclaw/discord@${expectedVersion}`,
+        });
+        expect(
+          JSON.parse(
+            fs.readFileSync(
+              path.join(expectDefined(record.installPath, "fixture path"), "package.json"),
+              "utf8",
+            ),
+          ).version,
+        ).toBe(expectedVersion);
+        if (caller === "Doctor repair") {
+          expect(readPersistedInstalledPluginIndexInstallRecords({ env })).toEqual(updatedRecords);
+        }
+      },
+    );
   });
 
   it.each([coreVersion, "2026.9.5-beta.2"])(

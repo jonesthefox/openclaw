@@ -530,7 +530,7 @@ function resolveUnpinnedOfficialReleaseSpec(params: {
   return order !== null && order <= 0 ? official.raw : undefined;
 }
 
-/** Shares recorded target and catalog replacement precedence with update admission. */
+/** Apply selector and release-pin policy before automatic cohort targets. */
 export function resolveNpmUpdateTarget(params: {
   record: PluginInstallRecord;
   trustedOfficialInstall?: ReturnType<
@@ -551,7 +551,7 @@ export function resolveNpmUpdateTarget(params: {
     resolveUnpinnedOfficialReleaseSpec({
       spec: params.record.spec,
       officialSpec: official?.npmSpec,
-      coreVersion: params.coreVersion,
+      coreVersion: resolveExactNpmSpecVersion(params.installSpecOverride) ?? params.coreVersion,
     });
   const spec =
     specOverride ??
@@ -562,7 +562,10 @@ export function resolveNpmUpdateTarget(params: {
     target: spec
       ? {
           spec,
-          installSpecOverride: params.specOverride ? undefined : params.installSpecOverride,
+          installSpecOverride:
+            !params.specOverride && resolveDefaultNpmSpec(spec)
+              ? params.installSpecOverride
+              : undefined,
           updateChannel: params.updateChannel,
           officialPackageName: resolveNpmSpecPackageName(official?.npmSpec),
           coreVersion: params.coreVersion,

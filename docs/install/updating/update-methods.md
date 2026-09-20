@@ -330,8 +330,9 @@ after a manual package replacement, run `openclaw doctor --fix` before restartin
 the Gateway.
 
 Doctor also brings drifted active official npm plugins to the installed OpenClaw
-release. It uses the same plugin updater as `openclaw update` and leaves
-third-party plugins unchanged. An unavailable plugin produces a warning with
+release, honoring recorded non-default tags and pins newer than its plugin cohort.
+It uses the same plugin updater as `openclaw update` and leaves third-party plugins
+unchanged. An unavailable plugin produces a warning with
 the reason; it does not prevent the other repairs from completing. Restore
 registry access or wait for the missing package, then rerun `openclaw doctor --fix`.
 
