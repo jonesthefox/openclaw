@@ -53,6 +53,11 @@ import type {
 } from "./session-manager-types.js";
 import { withSessionManagerWrite } from "./session-manager-write-admission.js";
 
+function canonicalizeSessionEntry<T extends SessionEntry>(entry: T): T {
+  // oxlint-disable-next-line unicorn/prefer-structured-clone -- Match the persisted JSON/toJSON shape exactly.
+  return JSON.parse(JSON.stringify(entry)) as T;
+}
+
 function isTalkRealtimeVoiceEntry(entry: SessionEntry): boolean {
   if (
     entry.type !== "message" ||
@@ -74,8 +79,7 @@ export class SessionManagerEntries extends SessionManagerSuffixPersistence {
     options?: AppendPersistenceOptions,
   ): { entry: T; anchor?: TranscriptEntryAnchor; lifecycleRevision?: string; appended: boolean } {
     this.assertTranscriptViewAvailable();
-    // oxlint-disable-next-line unicorn/prefer-structured-clone -- Match the persisted JSON/toJSON shape exactly.
-    const canonicalEntry = JSON.parse(JSON.stringify(entry)) as T;
+    const canonicalEntry = canonicalizeSessionEntry(entry);
     if (!isIndexedSessionEntry(canonicalEntry)) {
       throw new Error(`Invalid session transcript entry: ${entry.type}`);
     }
@@ -422,9 +426,7 @@ export class SessionManagerEntries extends SessionManagerSuffixPersistence {
           publication.publish,
         );
       }
-      // These two metadata records contain only primitive fields, matching native JSON persistence.
-      // oxlint-disable-next-line unicorn/prefer-structured-clone -- Keep the persisted JSON shape.
-      const canonical: unknown = JSON.parse(JSON.stringify(entry));
+      const canonical: unknown = canonicalizeSessionEntry(entry);
       if (
         !isIndexedSessionEntry(canonical) ||
         (canonical.type !== "model_change" && canonical.type !== "thinking_level_change")

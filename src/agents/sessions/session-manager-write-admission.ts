@@ -15,7 +15,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
-import type { SessionManager } from "./session-manager.js";
+import type { SessionManagerCore } from "./session-manager-core.js";
 
 // Detached managers have no database path; keep their existing write boundary keyed by owner.
 const detachedWriterQueues = resolveGlobalSingleton(
@@ -30,7 +30,7 @@ export type SessionManagerWriteAdmission = {
 
 /** Keep the manager operation, committed view adoption, and cleanup in one storage admission. */
 export async function withSessionManagerWrite<T>(
-  manager: Pick<SessionManager, "getSessionTarget" | "getSessionId">,
+  manager: Pick<SessionManagerCore, "getSessionTarget" | "getSessionId">,
   write: (admission?: SessionManagerWriteAdmission) => T | Promise<T>,
 ): Promise<T> {
   const target = manager.getSessionTarget();

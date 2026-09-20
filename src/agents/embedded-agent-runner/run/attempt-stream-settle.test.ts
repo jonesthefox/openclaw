@@ -201,6 +201,12 @@ describe("settleEmbeddedAttemptStream liveness", () => {
       const originalEntries = sessionManager.getEntries();
       const controller = new AbortController();
       const promptError = new Error("synthetic provider failure");
+      const assistant = createAssistant(
+        testModel,
+        [{ type: "text", text: "partial reply" }],
+        "error",
+      );
+      const usage = { input: 100, output: 20 };
       const input = createSettleFixture({
         sessionManager,
         runAbortSignal: controller.signal,
@@ -210,6 +216,8 @@ describe("settleEmbeddedAttemptStream liveness", () => {
           timedOutDuringCompaction: false,
         }),
       });
+      input.activeSession.messages.push(assistant);
+      input.subscription.getUsageTotals = () => usage;
       input.attempt = {
         ...input.attempt,
         ...target,
@@ -263,13 +271,16 @@ describe("settleEmbeddedAttemptStream liveness", () => {
         if (heldWriter) {
           await setImmediate();
           expect(settled).toBe(false);
-          controller.abort();
+          controller.abort(new Error("synthetic cancellation"));
           release.resolve();
           await heldWriter;
         }
         const result = await settlement;
         expect(result.promptError).toBe(promptError);
         expect(result.promptErrorSource).toBe("prompt");
+        expect(result.messagesSnapshot).toEqual([assistant]);
+        expect(result.currentAttemptAssistant).toBe(assistant);
+        expect(result.attemptUsage).toEqual(usage);
         const entries = SessionManager.open(target, state.workspaceDir).getEntries();
         if (scenario === "active provider failure") {
           expect(entries).toHaveLength(originalEntries.length + 1);
