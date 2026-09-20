@@ -137,6 +137,7 @@ suite.define(() => {
           await expect
             .poll(() => slider.getAttribute("data-chat-thinking-values"))
             .toBe(levels.map(({ id }) => id).join(","));
+          await slider.waitFor({ state: "visible" });
           const sliderBounds = await slider.boundingBox();
           expect(sliderBounds).not.toBeNull();
           await slider.click({

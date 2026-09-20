@@ -648,12 +648,11 @@ export function handleTranscriptContextMenu(event: MouseEvent, props: Transcript
   }
   menu.style.left = `${Math.max(0, left)}px`;
   menu.style.top = `${Math.max(0, top)}px`;
+  focusCandidates.find((button) => !button.disabled)?.focus();
   requestAnimationFrame(() => {
     if (!menu.isConnected || activeReplyContextMenu !== owner) {
       return;
     }
-    // Moving focus changes row containment; let the context-menu event finish first.
-    focusCandidates.find((button) => !button.disabled)?.focus();
     const handleOutsideEvent = (nextEvent: MouseEvent) => {
       if (!menu.contains(nextEvent.target as Node | null)) {
         removeReplyContextMenu();

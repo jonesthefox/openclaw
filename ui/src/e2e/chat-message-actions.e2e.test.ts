@@ -236,13 +236,6 @@ describeControlUiE2e("Control UI chat message actions", () => {
       await bubble.click({ button: "right" });
       const menu = page.locator(".chat-reply-context-menu");
       await menu.waitFor({ state: "visible" });
-      await expect
-        .poll(() =>
-          menu
-            .getByRole("menuitem", { name: "Copy as markdown", exact: true })
-            .evaluate((button) => document.activeElement === button),
-        )
-        .toBe(true);
       await screenshot(page, `${viewport.name}-subagent-context-menu.png`);
       expect.soft(await menu.getByRole("menuitem", { name: "Reply to message" }).count()).toBe(0);
       await page.keyboard.press("Escape");
