@@ -380,13 +380,17 @@ suite.define(() => {
     }
   });
 
-  it.each([1280, 390])(
-    "shows full follow-up summaries without obscuring the composer at %ipx",
-    async (width) => {
+  it.each([
+    { width: 1280, height: 720 },
+    { width: 390, height: 720 },
+    { width: 900, height: 500 },
+  ])(
+    "shows readable follow-up summaries and reachable actions at $width×$height",
+    async ({ width, height }) => {
       const context = await suite.newBrowserContext({
         locale: "en-US",
         serviceWorkers: "block",
-        viewport: { height: 720, width },
+        viewport: { height, width },
       });
       const page = await context.newPage();
       const suggestions = Array.from({ length: 12 }, (_, index) => ({
@@ -421,10 +425,11 @@ suite.define(() => {
         await tray.getByRole("button", { name: "Next suggested task" }).click();
         expect(await tray.getByText("2 / 12", { exact: true }).count()).toBe(1);
         const summary = tray.locator(".task-suggestion:visible .task-suggestion__summary");
-        await captureUiProof(suite, page, "task-suggestions", `summary-${width}.png`);
+        await captureUiProof(suite, page, "task-suggestions", `summary-${width}x${height}.png`);
         expect(
           await summary.evaluate((element) => element.scrollHeight <= element.clientHeight + 1),
         ).toBe(true);
+
         expect(
           await summary.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
         ).toBe(true);
@@ -450,11 +455,30 @@ suite.define(() => {
           }),
         ).toBe(true);
 
+        const card = tray.locator(".task-suggestion:visible");
+        await card.getByText("Show instructions", { exact: true }).click();
+        const start = card.getByRole("button", { name: "Start in a new session", exact: true });
+        await captureUiProof(suite, page, "task-suggestions", `verbose-${width}x${height}.png`);
+        for (const control of [card.getByRole("button", { name: "Copy prompt" }), start]) {
+          expect(
+            await control.evaluate((element) => {
+              const bounds = element.getBoundingClientRect();
+              return element.contains(
+                document.elementFromPoint(
+                  bounds.x + bounds.width / 2,
+                  bounds.y + bounds.height / 2,
+                ),
+              );
+            }),
+          ).toBe(true);
+        }
+        await start.click({ trial: true });
+
         const composer = page.locator(".agent-chat__composer-shell");
         await composer.waitFor({ state: "visible", timeout: 10_000 });
         const box = await composer.boundingBox();
         expect(box).not.toBeNull();
-        expect((box?.y ?? 720) + (box?.height ?? 0)).toBeLessThanOrEqual(720);
+        expect((box?.y ?? height) + (box?.height ?? 0)).toBeLessThanOrEqual(height);
       } finally {
         await suite.closeBrowserContext(context);
       }
