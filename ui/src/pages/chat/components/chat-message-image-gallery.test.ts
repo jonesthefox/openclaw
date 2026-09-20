@@ -29,7 +29,7 @@ describe("message image gallery loading", () => {
   it("opens the cached preview immediately, upgrades after decoding, and reuses the full image", async () => {
     const source = `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`;
     const full = createDeferred<Response>();
-    const decoded = createDeferred<void>();
+    const decoded = createDeferred();
     const decode = vi.fn(() => decoded.promise);
     const blobPrefix = `blob:progressive-${crypto.randomUUID()}`;
     let blobIndex = 0;

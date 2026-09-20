@@ -153,7 +153,7 @@ describe("openclaw-image-lightbox", () => {
 
   it("keeps the preview and zoom until a decoded original replaces it in the open viewer", async () => {
     const full = createDeferred<ImageLightboxItem | null>();
-    const decoded = createDeferred<void>();
+    const decoded = createDeferred();
     const decode = vi.fn(() => decoded.promise);
     vi.stubGlobal(
       "Image",

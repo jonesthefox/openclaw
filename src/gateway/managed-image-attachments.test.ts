@@ -47,7 +47,6 @@ import { withEnvAsync } from "../test-utils/env.js";
 import { createFixture } from "./managed-image-attachments.test-support.js";
 import {
   attachManagedImageRecordToMessage,
-  insertManagedImageRecord,
   listManagedImageRecordEntries,
   MANAGED_OUTGOING_ORIGINALS_SUBDIR,
   readManagedImageRecord,
