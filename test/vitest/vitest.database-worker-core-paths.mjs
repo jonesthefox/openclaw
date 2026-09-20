@@ -98,7 +98,6 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/tools/media-generate-tool.donor-resources.test.ts",
   "src/agents/tools/media-generate-tool.resources.test.ts",
   "src/agents/embedded-agent-runner/context-engine-maintenance.lifecycle.test.ts",
-  "src/agents/subagents/registry/subagent-registry-recovery-acceptance.test.ts",
   "src/agents/subagents/registry/subagent-registry-task-replacement.test.ts",
   "src/tasks/task-registry-session-index.test.ts",
   "src/tasks/task-registry.store.test.ts",
