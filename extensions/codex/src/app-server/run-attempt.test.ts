@@ -1963,11 +1963,11 @@ describe("runCodexAppServerAttempt", () => {
 
   it("registers owner tool declarations but rejects their execution on a private completion attempt", async () => {
     const ownerTool = createRuntimeDynamicTool("conversations_send");
-    testing.setOpenClawCodingToolsFactoryForTests((options) => [
+    const params = createRunParams();
+    setCodexTestToolFactory(params, (options) => [
       createRuntimeDynamicTool("sessions_send"),
       ...(options?.senderIsOwner === false ? [] : [ownerTool]),
     ]);
-    const params = createRunParams();
     setCodexTestModelSupportsTools(params, true);
     params.runtimePlan = createCodexRuntimePlanFixture();
     params.senderIsOwner = false;
@@ -2013,9 +2013,9 @@ describe("runCodexAppServerAttempt", () => {
   it.each([false, true])(
     "tracks parent completion continuity with stable owner registration=%s",
     async (stableOwnerRegistration) => {
-      testing.setOpenClawCodingToolsFactoryForTests(createOpenClawCodingTools);
       const { workspaceDir, agentDir } = createRunPaths();
       const params = createRunParams();
+      setCodexTestToolFactory(params, createOpenClawCodingTools);
       setCodexTestModelSupportsTools(params, true);
       params.disableTools = false;
       params.config = {

@@ -87,7 +87,7 @@ describe("Codex app-server dynamic tool build", () => {
     const request = vi
       .fn<NonNullable<Parameters<typeof createCodexPluginsTool>[0]["request"]>>()
       .mockResolvedValue({ marketplaces: [], marketplaceLoadErrors: [], featuredPluginIds: [] });
-    setOpenClawCodingToolsFactoryForTests((options) => {
+    setCodexTestToolFactory(params, (options) => {
       const tool = createCodexPluginsTool({
         bindingStore: { read: () => undefined },
         context: {
@@ -196,7 +196,7 @@ describe("Codex app-server dynamic tool build", () => {
     params.messageChannel = "telegram";
     params.messageProvider = "telegram";
     params.senderIsOwner = true;
-    setOpenClawCodingToolsFactoryForTests(createOpenClawCodingTools);
+    setCodexTestToolFactory(params, createOpenClawCodingTools);
     const registration = {
       forceHeartbeatTool: true,
       ignoreDisableMessageTool: true,
