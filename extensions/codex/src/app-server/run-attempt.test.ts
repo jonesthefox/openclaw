@@ -1981,7 +1981,8 @@ describe("runCodexAppServerAttempt", () => {
     const run = runCodexAppServerAttempt(params);
     await harness.waitForMethod("turn/start");
     const start = harness.requests.find((r) => r.method === "thread/start");
-    const specs = (start?.params as { dynamicTools: CodexDynamicToolSpec[] }).dynamicTools;
+    assert(start);
+    const specs = (start.params as { dynamicTools: CodexDynamicToolSpec[] }).dynamicTools;
     expect(specNames(specs)).toContain("conversations_send");
     await expect(
       harness.handleServerRequest({
@@ -2045,12 +2046,19 @@ describe("runCodexAppServerAttempt", () => {
       const fixture = await createLeasedCodexLifecycleHarness({
         agentDir,
         respond: async (method, requestParams) => {
-          if (method === "configRequirements/read") return { requirements: null };
-          if (method === "config/read") return { config: {}, origins: {}, layers: [] };
-          if (method === "thread/start") return threadStartResult(`parent-${++starts}`);
+          if (method === "configRequirements/read") {
+            return { requirements: null };
+          }
+          if (method === "config/read") {
+            return { config: {}, origins: {}, layers: [] };
+          }
+          if (method === "thread/start") {
+            return threadStartResult(`parent-${++starts}`);
+          }
           if (method === "thread/resume") {
             assert(isJsonObject(requestParams));
-            return threadStartResult(String(requestParams.threadId));
+            assert(typeof requestParams.threadId === "string");
+            return threadStartResult(requestParams.threadId);
           }
           throw new Error(`unexpected method: ${method}`);
         },
@@ -2062,7 +2070,9 @@ describe("runCodexAppServerAttempt", () => {
       for (const turn of [params, completionParams, params]) {
         const available = await buildDynamicToolsForTest(turn, workspaceDir);
         const registered = await buildDynamicToolsForTest(turn, workspaceDir, registration);
-        if (turn === params) expect(registered.map((t) => t.name)).toContain("conversations_send");
+        if (turn === params) {
+          expect(registered.map((t) => t.name)).toContain("conversations_send");
+        }
         const bridge = createCodexToolBridgeForTest(turn, available, registered);
         fingerprints.push(codexDynamicToolsFingerprint(bridge.specs));
         if (turn === completionParams) {
@@ -2100,7 +2110,9 @@ describe("runCodexAppServerAttempt", () => {
           added: previousSpecs.length ? names.filter((n) => !previousNames.includes(n)) : [],
           changed: specs.flatMap((t) => {
             const previous = previousSpecs.find((p) => p.name === t.name);
-            if (!previous) return [];
+            if (!previous) {
+              return [];
+            }
             const fields = (["description", "inputSchema"] as const).filter(
               (k) => JSON.stringify(previous[k]) !== JSON.stringify(t[k]),
             );
